@@ -13,10 +13,8 @@ ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.bot
 Restart=always
 RestartSec=5
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=off
 ProtectHome=true
-# UFW needs to update its persistent rules and runtime state when an
-# administrator confirms an IP block/unblock from the Telegram bot.
 ReadWritePaths=/var/lib/xfi-guard /etc/ufw /lib/ufw /var/lib/ufw /run/ufw
 
 [Install]
