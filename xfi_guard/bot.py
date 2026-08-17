@@ -1,10 +1,6 @@
-"""Admin Telegram bot with XFI Guard controls and AI Security Center."""
-
+"""Telegram admin bot for XFI Guard. All user-facing messages are in Russian."""
 from __future__ import annotations
-
-import asyncio
-import os
-
+import asyncio, os
 from .ai import AIAnalyzer
 from .ai_store import load as load_ai, save as save_ai
 from .checks import collect_basic_checks
@@ -12,215 +8,131 @@ from .events import parse_file
 from .security import collect_security_checks
 from .security_center import ai_report, summarize
 from .vpn import collect_vpn_checks
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
-
-TOKEN = os.getenv("XFI_GUARD_BOT_TOKEN")
-ADMIN_IDS = {int(value) for value in os.getenv("XFI_GUARD_ADMIN_IDS", "").split(",") if value.strip().isdigit()}
-
+TOKEN=os.getenv("XFI_GUARD_BOT_TOKEN")
+ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 class SetupStates(StatesGroup):
-    waiting_provider = State()
-    waiting_gemini_key = State()
-    waiting_groq_key = State()
-    waiting_gemini_model = State()
-    waiting_groq_model = State()
-
-
-def is_admin(message: Message) -> bool:
-    return bool(message.from_user and message.from_user.id in ADMIN_IDS)
-
-
-def mask_key(key: str) -> str:
-    return key[:4] + "…" + key[-4:] if len(key) >= 8 else ("configured" if key else "не настроен")
-
-
-def main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🔐 Безопасность")],
-        [KeyboardButton(text="🛡 Fail2Ban"), KeyboardButton(text="🔥 UFW")],
-        [KeyboardButton(text="🌐 VPN/Xray"), KeyboardButton(text="📋 События")],
-        [KeyboardButton(text="🤖 AI"), KeyboardButton(text="🧠 AI Security Center")],
-        [KeyboardButton(text="🔄 Проверка сейчас"), KeyboardButton(text="❓ Помощь")],
-    ], resize_keyboard=True, is_persistent=True)
-
-
-def ai_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🟢 Gemini"), KeyboardButton(text="🔵 Groq")],
-        [KeyboardButton(text="🔀 Выбрать AI")],
-        [KeyboardButton(text="🔑 Gemini API key"), KeyboardButton(text="🔑 Groq API key")],
-        [KeyboardButton(text="🧠 Gemini модель"), KeyboardButton(text="🧠 Groq модель")],
-        [KeyboardButton(text="🧪 Проверить AI"), KeyboardButton(text="ℹ️ AI статус")],
-        [KeyboardButton(text="⬅️ Главное меню")],
-    ], resize_keyboard=True)
-
-
-def security_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="📊 Анализ 24 часа")],
-        [KeyboardButton(text="🚨 Топ атакующих IP")],
-        [KeyboardButton(text="🤖 AI анализ сводки")],
-        [KeyboardButton(text="🔄 Обновить")],
-        [KeyboardButton(text="⬅️ Главное меню")],
-    ], resize_keyboard=True)
-
-
-def format_results(results: list) -> str:
-    return "\n".join(f"{getattr(x,'status','unknown').upper()}: {x.name} — {x.message}" for x in results)[:3800] or "Нет данных."
-
-
-def recent_events() -> list:
+    provider=State(); gemini_key=State(); groq_key=State(); gemini_model=State(); groq_model=State()
+def admin(m): return bool(m.from_user and m.from_user.id in ADMIN_IDS)
+def mask(k): return k[:4]+"…"+k[-4:] if len(k)>=8 else ("настроен" if k else "не настроен")
+def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
+def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["🤖 AI","🧠 Центр AI"],["🔄 Проверить сейчас","❓ Помощь"]])
+def ai_kb(): return kb([["🟢 Gemini","🔵 Groq"],["🔀 Выбрать AI"],["🔑 Ключ Gemini","🔑 Ключ Groq"],["🧠 Модель Gemini","🧠 Модель Groq"],["🧪 Проверить AI","ℹ️ Статус AI"],["⬅️ Главное меню"]])
+def center_kb(): return kb([["📊 Анализ за 24 часа"],["🚨 Топ атакующих IP"],["🤖 AI-анализ сводки"],["🔄 Обновить"],["⬅️ Главное меню"]])
+def results(r): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {x.name} — {x.message}" for x in r)[:3800] or "Нет данных."
+def events():
     from .config import load_config
-    cfg = load_config()
-    return parse_file(cfg.ssh_log, "ssh") + parse_file(cfg.fail2ban_log, "fail2ban")
-
-
-def build_dispatcher() -> Dispatcher:
-    dp = Dispatcher(storage=MemoryStorage())
-
+    c=load_config(); return parse_file(c.ssh_log,"ssh")+parse_file(c.fail2ban_log,"fail2ban")
+def build_dispatcher():
+    dp=Dispatcher(storage=MemoryStorage())
     @dp.message(Command("start"))
-    async def start(message: Message, state: FSMContext):
+    async def start(m,state):
         await state.clear()
-        if is_admin(message): await message.answer("XFI Guard — панель управления", reply_markup=main_keyboard())
-
-    @dp.message(Command("status"))
-    @dp.message(F.text == "📊 Статус")
-    async def status(message: Message):
-        if is_admin(message): await message.answer("📊 XFI Guard\n\n" + format_results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()), reply_markup=main_keyboard())
-
-    @dp.message(Command("security"))
-    @dp.message(F.text == "🔐 Безопасность")
-    async def security(message: Message):
-        if is_admin(message): await message.answer("🔐 Security\n\n" + format_results(collect_security_checks()), reply_markup=main_keyboard())
-
-    @dp.message(Command("fail2ban"))
-    @dp.message(F.text == "🛡 Fail2Ban")
-    async def fail2ban(message: Message):
-        if is_admin(message): await message.answer("🛡 Fail2Ban\n\n" + format_results([x for x in collect_security_checks() if x.name == "fail2ban"]), reply_markup=main_keyboard())
-
-    @dp.message(Command("ufw"))
-    @dp.message(F.text == "🔥 UFW")
-    async def ufw(message: Message):
-        if is_admin(message): await message.answer("🔥 UFW\n\n" + format_results([x for x in collect_security_checks() if x.name == "ufw"]), reply_markup=main_keyboard())
-
-    @dp.message(Command("vpn"))
-    @dp.message(F.text == "🌐 VPN/Xray")
-    async def vpn(message: Message):
-        if is_admin(message): await message.answer("🌐 VPN/Xray\n\n" + format_results(collect_vpn_checks()), reply_markup=main_keyboard())
-
-    @dp.message(F.text == "📋 События")
-    async def events(message: Message):
-        if is_admin(message):
-            items = recent_events()[-15:]
-            text = "\n".join(f"{e.severity.upper()} | {e.event_type} | {e.ip or '-'} | {e.user or '-'}" for e in items) or "Нет событий."
-            await message.answer("📋 Последние события\n\n" + text, reply_markup=main_keyboard())
-
-    @dp.message(Command("check"))
-    @dp.message(F.text == "🔄 Проверка сейчас")
-    async def check(message: Message):
-        if is_admin(message): await message.answer("🔄 Проверка\n\n" + format_results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()), reply_markup=main_keyboard())
-
-    @dp.message(F.text == "🤖 AI")
-    async def ai_menu(message: Message):
-        if is_admin(message):
-            cfg=load_ai(); await message.answer(f"AI: {cfg.get('provider','gemini').upper()}\nGemini: {mask_key(cfg.get('gemini_key',''))} / {cfg.get('gemini_model','gemini-2.5-pro')}\nGroq: {mask_key(cfg.get('groq_key',''))} / {cfg.get('groq_model','llama-3.3-70b-versatile')}", reply_markup=ai_keyboard())
-
-    @dp.message(F.text == "🧠 AI Security Center")
-    async def security_center(message: Message):
-        if is_admin(message): await message.answer("🧠 AI Security Center", reply_markup=security_keyboard())
-
-    @dp.message(F.text.in_({"📊 Анализ 24 часа", "🚨 Топ атакующих IP", "🤖 AI анализ сводки", "🔄 Обновить"}))
-    async def center_action(message: Message):
-        if not is_admin(message): return
-        events = recent_events()
-        summary = summarize(events, 24)
-        if message.text == "📊 Анализ 24 часа":
-            text = f"📊 За 24 часа\nСобытий: {summary['events']}\nУникальных IP: {summary['unique_ips']}\nCritical: {summary['critical']}\nWarning: {summary['warning']}"
-        elif message.text == "🚨 Топ атакующих IP":
-            top = "\n".join(f"{ip}: {count}" for ip, count in summary["top_ips"]) or "Нет IP."
-            text = "🚨 Топ IP\n\n" + top
-        elif message.text == "🤖 AI анализ сводки":
-            text = "🤖 AI анализ\n\n" + (ai_report(events) or "AI не настроен или не ответил.")
-        else:
-            text = "🔄 Обновлено\n\n" + f"Событий: {summary['events']}\nУникальных IP: {summary['unique_ips']}"
-        await message.answer(text[:3900], reply_markup=security_keyboard())
-
-    @dp.message(F.text.in_({"🟢 Gemini", "🔵 Groq", "🔀 Выбрать AI"}))
-    async def choose_provider(message: Message, state: FSMContext):
-        if not is_admin(message): return
-        if message.text == "🟢 Gemini": provider="gemini"
-        elif message.text == "🔵 Groq": provider="groq"
-        else:
-            await state.set_state(SetupStates.waiting_provider); await message.answer("Введите: gemini или groq", reply_markup=ai_keyboard()); return
-        cfg=load_ai(); cfg["provider"]=provider; save_ai(cfg); await message.answer(f"AI провайдер: {provider.upper()}", reply_markup=ai_keyboard())
-
-    @dp.message(SetupStates.waiting_provider)
-    async def receive_provider(message: Message, state: FSMContext):
-        if not is_admin(message): return
-        provider=(message.text or "").strip().lower()
-        if provider not in {"gemini","groq"}: await message.answer("Введите только gemini или groq"); return
-        cfg=load_ai(); cfg["provider"]=provider; save_ai(cfg); await state.clear(); await message.answer(f"AI провайдер: {provider.upper()}", reply_markup=ai_keyboard())
-
-    async def ask_key(message: Message, state: FSMContext, provider: str):
-        if is_admin(message): await state.set_state(SetupStates.waiting_gemini_key if provider=="gemini" else SetupStates.waiting_groq_key); await message.answer(f"Отправьте {provider} API key. Сообщение будет удалено.")
-    @dp.message(F.text == "🔑 Gemini API key")
-    async def gemini_key(message: Message, state: FSMContext): await ask_key(message,state,"gemini")
-    @dp.message(F.text == "🔑 Groq API key")
-    async def groq_key(message: Message, state: FSMContext): await ask_key(message,state,"groq")
-
-    async def save_key(message: Message, state: FSMContext, provider: str):
-        if not is_admin(message): return
-        key=(message.text or "").strip()
-        if len(key)<20: await message.answer("Ключ выглядит некорректным."); return
-        cfg=load_ai(); cfg["gemini_key" if provider=="gemini" else "groq_key"]=key; save_ai(cfg); await state.clear()
-        try: await message.delete()
+        if admin(m): await m.answer("🛡 XFI Guard\n\nПанель управления сервером. Выберите нужную функцию:",reply_markup=main_kb())
+    @dp.message(Command("status"));
+    async def _dummy(m): pass
+    @dp.message(F.text=="📊 Статус")
+    async def status(m):
+        if admin(m): await m.answer("📊 Статус XFI Guard\n\n"+results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()),reply_markup=main_kb())
+    @dp.message(F.text=="🔐 Безопасность")
+    async def security(m):
+        if admin(m): await m.answer("🔐 Безопасность\n\n"+results(collect_security_checks()),reply_markup=main_kb())
+    @dp.message(F.text=="🛡 Fail2Ban")
+    async def fail2ban(m):
+        if admin(m): await m.answer("🛡 Fail2Ban\n\n"+results([x for x in collect_security_checks() if x.name=="fail2ban"]),reply_markup=main_kb())
+    @dp.message(F.text=="🔥 UFW")
+    async def ufw(m):
+        if admin(m): await m.answer("🔥 UFW\n\n"+results([x for x in collect_security_checks() if x.name=="ufw"]),reply_markup=main_kb())
+    @dp.message(F.text=="🌐 VPN/Xray")
+    async def vpn(m):
+        if admin(m): await m.answer("🌐 VPN/Xray\n\n"+results(collect_vpn_checks()),reply_markup=main_kb())
+    @dp.message(F.text=="📋 События")
+    async def ev(m):
+        if admin(m):
+            e=events()[-15:]; t="\n".join(f"{x.severity.upper()} | {x.event_type} | {x.ip or '-'} | {x.user or '-'}" for x in e) or "Нет событий."; await m.answer("📋 Последние события\n\n"+t,reply_markup=main_kb())
+    @dp.message(F.text=="🔄 Проверить сейчас")
+    async def check(m):
+        if admin(m): await m.answer("🔄 Проверка завершена\n\n"+results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()),reply_markup=main_kb())
+    @dp.message(F.text=="🤖 AI")
+    async def ai(m):
+        if admin(m):
+            c=load_ai(); await m.answer(f"🤖 Центр AI\n\nАктивный провайдер: {c.get('provider','gemini').upper()}\nGemini: {mask(c.get('gemini_key',''))}\nМодель Gemini: {c.get('gemini_model','gemini-2.5-pro')}\nGroq: {mask(c.get('groq_key',''))}\nМодель Groq: {c.get('groq_model','llama-3.3-70b-versatile')}",reply_markup=ai_kb())
+    @dp.message(F.text=="🧠 Центр AI")
+    async def center(m):
+        if admin(m): await m.answer("🧠 Центр AI безопасности\n\nВыберите действие:",reply_markup=center_kb())
+    @dp.message(F.text.in_({"📊 Анализ за 24 часа","🚨 Топ атакующих IP","🤖 AI-анализ сводки","🔄 Обновить"}))
+    async def center_action(m):
+        if not admin(m): return
+        s=summarize(events(),24)
+        if m.text=="📊 Анализ за 24 часа": t=f"📊 Анализ за 24 часа\n\nСобытий: {s['events']}\nУникальных IP: {s['unique_ips']}\nКритических: {s['critical']}\nПредупреждений: {s['warning']}"
+        elif m.text=="🚨 Топ атакующих IP": t="🚨 Топ атакующих IP\n\n"+("\n".join(f"{ip}: {n} событий" for ip,n in s['top_ips']) or "Нет данных.")
+        elif m.text=="🤖 AI-анализ сводки": t="🤖 AI-анализ\n\n"+(ai_report(events()) or "AI не настроен или не ответил.")
+        else: t=f"🔄 Данные обновлены\n\nСобытий: {s['events']}\nУникальных IP: {s['unique_ips']}"
+        await m.answer(t[:3900],reply_markup=center_kb())
+    @dp.message(F.text.in_({"🟢 Gemini","🔵 Groq","🔀 Выбрать AI"}))
+    async def provider(m,state):
+        if not admin(m): return
+        if m.text=="🔀 Выбрать AI": await state.set_state(SetupStates.provider); await m.answer("Введите название провайдера: gemini или groq",reply_markup=ai_kb()); return
+        p="gemini" if m.text=="🟢 Gemini" else "groq"; c=load_ai(); c['provider']=p; save_ai(c); await m.answer(f"✅ Активный AI: {p.upper()}",reply_markup=ai_kb())
+    @dp.message(SetupStates.provider)
+    async def provider_text(m,state):
+        p=(m.text or '').strip().lower()
+        if p not in {'gemini','groq'}: await m.answer("Введите только: gemini или groq"); return
+        c=load_ai(); c['provider']=p; save_ai(c); await state.clear(); await m.answer(f"✅ Активный AI: {p.upper()}",reply_markup=ai_kb())
+    async def ask(m,state,p):
+        if admin(m): await state.set_state(SetupStates.gemini_key if p=='gemini' else SetupStates.groq_key); await m.answer(f"🔑 Отправьте API-ключ {p.upper()} одним сообщением. После сохранения сообщение будет удалено.")
+    @dp.message(F.text=="🔑 Ключ Gemini")
+    async def gk(m,state): await ask(m,state,'gemini')
+    @dp.message(F.text=="🔑 Ключ Groq")
+    async def qk(m,state): await ask(m,state,'groq')
+    async def savekey(m,state,p):
+        if not admin(m): return
+        k=(m.text or '').strip()
+        if len(k)<20: await m.answer("❌ Ключ слишком короткий или некорректный."); return
+        c=load_ai(); c['gemini_key' if p=='gemini' else 'groq_key']=k; save_ai(c); await state.clear()
+        try: await m.delete()
         except Exception: pass
-        await message.answer(f"{provider.upper()} API key сохранён.", reply_markup=ai_keyboard())
-    @dp.message(SetupStates.waiting_gemini_key)
-    async def save_gemini(message: Message,state:FSMContext): await save_key(message,state,"gemini")
-    @dp.message(SetupStates.waiting_groq_key)
-    async def save_groq(message: Message,state:FSMContext): await save_key(message,state,"groq")
-
-    @dp.message(F.text == "🧠 Gemini модель")
-    async def gemini_model(message: Message,state:FSMContext):
-        if is_admin(message): await state.set_state(SetupStates.waiting_gemini_model); await message.answer("Введите Gemini model")
-    @dp.message(F.text == "🧠 Groq модель")
-    async def groq_model(message: Message,state:FSMContext):
-        if is_admin(message): await state.set_state(SetupStates.waiting_groq_model); await message.answer("Введите Groq model")
-    async def save_model(message: Message,state:FSMContext,provider:str):
-        if not is_admin(message): return
-        model=(message.text or "").strip()
-        if not model or any(ch.isspace() for ch in model): await message.answer("Некорректное имя модели"); return
-        cfg=load_ai(); cfg["gemini_model" if provider=="gemini" else "groq_model"]=model; save_ai(cfg); await state.clear(); await message.answer(f"Модель {provider.upper()}: {model}", reply_markup=ai_keyboard())
-    @dp.message(SetupStates.waiting_gemini_model)
-    async def save_gm(message: Message,state:FSMContext): await save_model(message,state,"gemini")
-    @dp.message(SetupStates.waiting_groq_model)
-    async def save_gr(message: Message,state:FSMContext): await save_model(message,state,"groq")
-
-    @dp.message(F.text == "🧪 Проверить AI")
-    async def test_ai(message: Message):
-        if is_admin(message):
-            a=AIAnalyzer(); result=a.analyze({"event_type":"manual_test","severity":"warning","message":"XFI Guard AI connectivity test"}); await message.answer("🧪 AI test\n\n"+(result or "AI API не вернул результат."),reply_markup=ai_keyboard())
-    @dp.message(F.text == "ℹ️ AI статус")
-    async def ai_status(message: Message):
-        if is_admin(message):
-            cfg=load_ai(); a=AIAnalyzer(); await message.answer(f"Провайдер: {cfg.get('provider','gemini').upper()}\nАктивен: {'YES' if a.enabled() else 'NO'}\nGemini: {mask_key(cfg.get('gemini_key',''))}\nGroq: {mask_key(cfg.get('groq_key',''))}",reply_markup=ai_keyboard())
-
-    @dp.message(F.text == "⬅️ Главное меню")
-    async def back(message: Message,state:FSMContext): await state.clear(); await message.answer("XFI Guard — панель управления",reply_markup=main_keyboard())
-    @dp.message(Command("help"))
-    @dp.message(F.text == "❓ Помощь")
-    async def help_message(message: Message):
-        if is_admin(message): await message.answer("Все функции доступны кнопками.",reply_markup=main_keyboard())
+        await m.answer(f"✅ Ключ {p.upper()} сохранён.",reply_markup=ai_kb())
+    @dp.message(SetupStates.gemini_key)
+    async def sg(m,state): await savekey(m,state,'gemini')
+    @dp.message(SetupStates.groq_key)
+    async def sq(m,state): await savekey(m,state,'groq')
+    @dp.message(F.text=="🧠 Модель Gemini")
+    async def gm(m,state):
+        if admin(m): await state.set_state(SetupStates.gemini_model); await m.answer("Введите название модели Gemini:")
+    @dp.message(F.text=="🧠 Модель Groq")
+    async def gr(m,state):
+        if admin(m): await state.set_state(SetupStates.groq_model); await m.answer("Введите название модели Groq:")
+    async def savemodel(m,state,p):
+        if not admin(m): return
+        model=(m.text or '').strip()
+        if not model or any(ch.isspace() for ch in model): await m.answer("❌ Некорректное название модели."); return
+        c=load_ai(); c['gemini_model' if p=='gemini' else 'groq_model']=model; save_ai(c); await state.clear(); await m.answer(f"✅ Модель {p.upper()} изменена: {model}",reply_markup=ai_kb())
+    @dp.message(SetupStates.gemini_model)
+    async def sgm(m,state): await savemodel(m,state,'gemini')
+    @dp.message(SetupStates.groq_model)
+    async def sgr(m,state): await savemodel(m,state,'groq')
+    @dp.message(F.text=="🧪 Проверить AI")
+    async def test(m):
+        if admin(m):
+            r=AIAnalyzer().analyze({'event_type':'manual_test','severity':'warning','message':'Тест подключения XFI Guard AI'})
+            await m.answer("🧪 Проверка AI\n\n"+(r or "❌ AI не вернул ответ."),reply_markup=ai_kb())
+    @dp.message(F.text=="ℹ️ Статус AI")
+    async def aist(m):
+        if admin(m):
+            c=load_ai(); await m.answer(f"ℹ️ Статус AI\n\nПровайдер: {c.get('provider','gemini').upper()}\nGemini: {mask(c.get('gemini_key',''))}\nGroq: {mask(c.get('groq_key',''))}",reply_markup=ai_kb())
+    @dp.message(F.text=="⬅️ Главное меню")
+    async def back(m,state): await state.clear(); await m.answer("🛡 XFI Guard — главное меню",reply_markup=main_kb())
+    @dp.message(F.text=="❓ Помощь")
+    async def help(m):
+        if admin(m): await m.answer("❓ Все функции XFI Guard доступны через кнопки.\n\nAI можно переключать между Gemini и Groq, задавать API-ключи и модели.",reply_markup=main_kb())
     return dp
-
 async def main():
-    if not TOKEN or not ADMIN_IDS: raise RuntimeError("XFI_GUARD_BOT_TOKEN and XFI_GUARD_ADMIN_IDS are required")
+    if not TOKEN or not ADMIN_IDS: raise RuntimeError("Не заданы XFI_GUARD_BOT_TOKEN и XFI_GUARD_ADMIN_IDS")
     await build_dispatcher().start_polling(Bot(TOKEN))
-
-if __name__ == "__main__": asyncio.run(main())
+if __name__=='__main__': asyncio.run(main())
