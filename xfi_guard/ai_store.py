@@ -10,15 +10,30 @@ import os
 from pathlib import Path
 
 DEFAULT_PATH = "/var/lib/xfi-guard/ai.json"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 
 
 def load(path: str = DEFAULT_PATH) -> dict:
     p = Path(path)
     if not p.is_file():
-        return {"provider": "gemini", "gemini_model": "gemini-2.5-pro", "groq_model": "llama-3.3-70b-versatile", "gemini_key": "", "groq_key": ""}
+        return {
+            "provider": "gemini",
+            "gemini_model": DEFAULT_GEMINI_MODEL,
+            "groq_model": DEFAULT_GROQ_MODEL,
+            "gemini_key": "",
+            "groq_key": "",
+        }
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        data.setdefault("provider", "gemini")
+        data.setdefault("gemini_model", DEFAULT_GEMINI_MODEL)
+        data.setdefault("groq_model", DEFAULT_GROQ_MODEL)
+        data.setdefault("gemini_key", "")
+        data.setdefault("groq_key", "")
+        return data
     except (OSError, json.JSONDecodeError):
         return {}
 
