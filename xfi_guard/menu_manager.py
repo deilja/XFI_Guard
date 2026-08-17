@@ -106,22 +106,29 @@ async def _send_message_with_menu_cleanup(self: Bot, chat_id: int | str, text: s
 
 
 async def _callback_bridge(callback: CallbackQuery, dispatcher: Dispatcher) -> None:
-    """Turn an inline button press into a synthetic Message update.
-
-    The previous implementation registered this coroutine through a synchronous
-    lambda. aiogram then treated the lambda as a sync callback, producing
-    ``coroutine was never awaited`` and making buttons appear unresponsive.
-    """
+    """Delete the exact clicked menu, then route its callback as a message."""
     if not callback.message or not callback.data:
         await callback.answer()
         return
 
-    await callback.answer()
     bot = callback.bot
-    key = _chat_key(callback.message.chat.id, getattr(callback.message, "message_thread_id", None))
-    await _delete_previous_menu(bot, key)
+    message = callback.message
+    key = _chat_key(message.chat.id, getattr(message, "message_thread_id", None))
 
-    synthetic_message = callback.message.model_copy(
+    # Always delete the exact Telegram message containing the clicked button.
+    # Do not rely only on _last_menu: this also works after a restart, when the
+    # in-memory menu registry is empty.
+    async with _locks[key]:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+        except Exception:
+            pass
+        if _last_menu.get(key) == message.message_id:
+            _last_menu.pop(key, None)
+
+    await callback.answer()
+
+    synthetic_message = message.model_copy(
         update={"text": callback.data, "from_user": callback.from_user}
     )
     update = Update(update_id=0, message=synthetic_message)
