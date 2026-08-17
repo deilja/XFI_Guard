@@ -1,12 +1,11 @@
 """Risk scoring and human-confirmed defense decisions."""
 from __future__ import annotations
 
-import ipaddress
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .firewall import block_ip, list_blocked_ips, validate_public_ip
+from .firewall import block_ip, list_blocked_ips, unblock_ip, validate_public_ip
 
 STATE_FILE = Path("/var/lib/xfi-guard/defense.json")
 
@@ -25,6 +24,19 @@ def _save(data: dict) -> None:
         STATE_FILE.chmod(0o600)
     except OSError:
         pass
+
+
+def _audit(ip: str, action: str, actor: str, reason: str) -> None:
+    state = _load()
+    state.setdefault("history", []).append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "ip": ip,
+        "actor": str(actor),
+        "action": action,
+        "reason": str(reason)[:500],
+    })
+    state["history"] = state["history"][-500:]
+    _save(state)
 
 
 def score_ip(item: dict) -> dict:
@@ -56,16 +68,15 @@ def confirm_block(ip: str, actor: str = "admin", reason: str = "manual confirmat
     ip = validate_public_ip(ip)
     ok, message = block_ip(ip)
     if ok:
-        state = _load()
-        state.setdefault("history", []).append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "ip": ip,
-            "actor": str(actor),
-            "action": "block",
-            "reason": str(reason)[:500],
-        })
-        state["history"] = state["history"][-500:]
-        _save(state)
+        _audit(ip, "block", actor, reason)
+    return ok, message
+
+
+def confirm_unblock(ip: str, actor: str = "admin", reason: str = "manual confirmation") -> tuple[bool, str]:
+    ip = validate_public_ip(ip)
+    ok, message = unblock_ip(ip)
+    if ok:
+        _audit(ip, "unblock", actor, reason)
     return ok, message
 
 
