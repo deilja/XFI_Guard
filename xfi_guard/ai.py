@@ -19,20 +19,9 @@ class AIAnalyzer:
         self.provider = (provider or cfg.get("provider") or os.getenv("XFI_GUARD_AI_PROVIDER", "gemini")).lower()
         if self.provider not in {"gemini", "groq"}:
             self.provider = "gemini"
-        self.gemini = GeminiAnalyzer(
-            api_key=cfg.get("gemini_key") or None,
-            model=cfg.get("gemini_model") or None,
-        )
-        self.groq_key = (
-            cfg.get("groq_key")
-            or os.getenv("XFI_GUARD_GROQ_API_KEY")
-            or os.getenv("GROQ_API_KEY")
-        )
-        self.groq_model = (
-            cfg.get("groq_model")
-            or os.getenv("XFI_GROQ_MODEL")
-            or os.getenv("XFI_GUARD_GROQ_MODEL", "openai/gpt-oss-20b")
-        )
+        self.gemini = GeminiAnalyzer(api_key=cfg.get("gemini_key") or None, model=cfg.get("gemini_model") or None)
+        self.groq_key = cfg.get("groq_key") or os.getenv("XFI_GUARD_GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+        self.groq_model = cfg.get("groq_model") or os.getenv("XFI_GROQ_MODEL") or os.getenv("XFI_GUARD_GROQ_MODEL", "openai/gpt-oss-20b")
         self.last_error = ""
         self.last_provider = ""
         self.last_model = ""
@@ -64,18 +53,9 @@ class AIAnalyzer:
         if not self.groq_key:
             self.last_error = "API-ключ Groq не настроен"
             return None, 0
-        headers = {
-            "Authorization": f"Bearer {self.groq_key}",
-            "Content-Type": "application/json",
-            "User-Agent": "XFI-Guard/1.1",
-        }
+        headers = {"Authorization": f"Bearer {self.groq_key}", "Content-Type": "application/json", "User-Agent": "XFI-Guard/1.1"}
         data = json.dumps(body).encode() if body is not None else None
-        req = request.Request(
-            url,
-            data=data,
-            headers=headers,
-            method="POST" if body is not None else "GET",
-        )
+        req = request.Request(url, data=data, headers=headers, method="POST" if body is not None else "GET")
         try:
             with request.urlopen(req, timeout=20) as response:
                 return json.loads(response.read().decode()), response.status
@@ -93,29 +73,16 @@ class AIAnalyzer:
         if not payload or not isinstance(payload.get("data"), list):
             self.last_error = self.last_error or "Groq API вернул некорректный ответ"
             return []
-        return sorted(
-            ({"id": x.get("id"), "owned_by": x.get("owned_by", "")} for x in payload["data"] if x.get("id")),
-            key=lambda x: x["id"],
-        )
+        return sorted(({"id": x.get("id"), "owned_by": x.get("owned_by", "")} for x in payload["data"] if x.get("id")), key=lambda x: x["id"])
 
     def _analyze_groq(self, event: dict) -> str | None:
-        prompt = (
-            "Ты аналитик безопасности XFI Guard. Проанализируй событие безопасности VPS. "
-            "Ответь кратко на русском языке: риск, объяснение, рекомендуемое действие. "
-            "Не выполняй команды.\n" + json.dumps(event, ensure_ascii=False)
-        )
-        body = {
-            "model": self.groq_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "max_tokens": 500,
-        }
+        prompt = "Ты аналитик безопасности XFI Guard. Проанализируй событие безопасности VPS. Ответь кратко на русском языке: риск, объяснение, рекомендуемое действие. Не выполняй команды.\n" + json.dumps(event, ensure_ascii=False)
+        body = {"model": self.groq_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1, "max_tokens": 500}
         payload, _ = self._groq_request("https://api.groq.com/openai/v1/chat/completions", body)
         try:
             text = payload["choices"][0]["message"]["content"] if payload else None
             if text:
-                self.last_provider = "groq"
-                self.last_model = self.groq_model
+                self.last_provider, self.last_model = "groq", self.groq_model
                 return text
         except (KeyError, IndexError, TypeError):
             pass
@@ -129,8 +96,7 @@ class AIAnalyzer:
                 return None
             result = self.gemini.analyze(event)
             if result:
-                self.last_provider = "gemini"
-                self.last_model = self.gemini.model
+                self.last_provider, self.last_model = "gemini", self.gemini.model
                 return result
             self.last_error = self.gemini.last_error or "Gemini не вернул ответ"
             return None
@@ -179,7 +145,6 @@ class AIAnalyzer:
                     item["reason"] = str(event.get("reason") or event.get("message"))[:300]
             except ValueError:
                 continue
-
         try:
             inventory = collect_attack_surface()
             for item in inventory.get("ips", []):
@@ -197,7 +162,6 @@ class AIAnalyzer:
                     current["reason"] = str(item["reason"])[:300]
         except Exception as exc:
             self.last_error = f"Сбор картины атак: {type(exc).__name__}: {exc}"
-
         try:
             from .firewall import list_blocked_ips
             blocked = set(list_blocked_ips())
@@ -206,18 +170,8 @@ class AIAnalyzer:
         candidates = [x for x in candidates_by_ip.values() if x["ip"] not in blocked]
         if not candidates or not self.enabled():
             return []
-
         candidates.sort(key=lambda x: (x["severity"] != "critical", -len(x["sources"]), -x["events"]))
-        prompt = (
-            "Ты аналитик безопасности XFI Guard. Проанализируй ПОЛНУЮ текущую картину атак VPS. "
-            "Учитывай источники fail2ban, ufw и ssh, число событий и повторяемость. "
-            "Выбери максимум 5 адресов, которые обоснованно рекомендуется заблокировать. "
-            "Не рекомендуй уже заблокированный адрес. Никогда не придумывай IP. "
-            "Для каждого укажи reason и risk: low, medium, high или critical. "
-            "Верни ТОЛЬКО JSON-объект {recommendations:[{ip,reason,risk,confidence}]}. "
-            "Блокировка не выполняется автоматически. Ответ должен быть на русском языке.\n\n"
-            + json.dumps(candidates, ensure_ascii=False)
-        )
+        prompt = ("Ты аналитик безопасности XFI Guard. Проанализируй ПОЛНУЮ текущую картину атак VPS. Учитывай источники fail2ban, ufw и ssh, число событий и повторяемость. Выбери максимум 5 адресов, которые обоснованно рекомендуется заблокировать. Не рекомендуй уже заблокированный адрес. Никогда не придумывай IP. Для каждого укажи reason и risk: low, medium, high или critical. Верни ТОЛЬКО JSON-объект {recommendations:[{ip,reason,risk,confidence}]}. Блокировка не выполняется автоматически. Ответ должен быть на русском языке.\n\n" + json.dumps(candidates, ensure_ascii=False))
         try:
             result = None
             if self.provider == "gemini":
@@ -227,13 +181,7 @@ class AIAnalyzer:
                 else:
                     self.last_error = self.gemini.last_error or self.last_error
             else:
-                body = {
-                    "model": self.groq_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0,
-                    "max_tokens": 900,
-                    "response_format": {"type": "json_object"},
-                }
+                body = {"model": self.groq_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 900, "response_format": {"type": "json_object"}}
                 payload, _ = self._groq_request("https://api.groq.com/openai/v1/chat/completions", body)
                 result = payload["choices"][0]["message"]["content"] if payload else None
                 if result:
@@ -258,3 +206,21 @@ class AIAnalyzer:
         except Exception as exc:
             self.last_error = f"Рекомендации AI: {type(exc).__name__}: {exc}"
             return []
+
+
+# Register the Telegram AI settings UI explicitly at Dispatcher construction.
+# This preserves the existing bot handlers while keeping AI UI isolated.
+try:
+    from aiogram import Dispatcher as _XfiDispatcher
+    if not getattr(_XfiDispatcher, "_xfi_ai_patch", False):
+        _xfi_original_init = _XfiDispatcher.__init__
+
+        def _xfi_dispatcher_init(self, *args, **kwargs):
+            _xfi_original_init(self, *args, **kwargs)
+            from .ai_ui import install_ai_handlers
+            install_ai_handlers(self)
+
+        _XfiDispatcher.__init__ = _xfi_dispatcher_init
+        _XfiDispatcher._xfi_ai_patch = True
+except Exception:
+    pass
