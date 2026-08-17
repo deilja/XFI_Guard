@@ -22,52 +22,56 @@ XFI Guard устанавливается на Ubuntu/Debian VPS и запуск�
 - systemd;
 - unit-тесты и GitHub Actions CI.
 
-## Быстрая установка
+## Установка одной командой
 
-Требования: Ubuntu 22.04/24.04 или Debian 12+, root/sudo, Python 3.11+.
+Для Ubuntu 22.04/24.04 и Debian 12+:
 
 ```bash
-sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip
-sudo mkdir -p /opt
-sudo git clone https://github.com/deilja/XFI_Guard.git /opt/xfi-guard
-cd /opt/xfi-guard
-sudo python3 -m venv /opt/xfi-guard/.venv
-sudo /opt/xfi-guard/.venv/bin/pip install --upgrade pip
-if [ -f requirements.txt ]; then sudo /opt/xfi-guard/.venv/bin/pip install -r requirements.txt; fi
-sudo mkdir -p /var/log/xfi-guard /var/lib/xfi-guard
-sudo install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now xfi-guard
-sudo systemctl status xfi-guard --no-pager
+curl -fsSL https://raw.githubusercontent.com/deilja/XFI_Guard/main/install.sh | sudo bash
 ```
 
-## Проверка установки
+Альтернативно через wget:
 
 ```bash
-sudo journalctl -u xfi-guard -n 100 --no-pager
-sudo tail -n 20 /var/log/xfi-guard/monitor.jsonl
-sudo /opt/xfi-guard/.venv/bin/python -m pytest -q
+wget -qO- https://raw.githubusercontent.com/deilja/XFI_Guard/main/install.sh | sudo bash
 ```
 
-Если сервис не запускается:
+Скрипт автоматически:
+
+1. устанавливает системные зависимости;
+2. загружает XFI Guard в `/opt/xfi-guard`;
+3. создаёт Python virtualenv;
+4. устанавливает Python-зависимости;
+5. создаёт `/var/log/xfi-guard` и `/var/lib/xfi-guard`;
+6. устанавливает systemd unit;
+7. запускает `xfi-guard`;
+8. проверяет, что сервис запущен.
+
+Пользовательские переменные можно передать перед запуском:
 
 ```bash
-sudo systemctl stop xfi-guard
-cd /opt/xfi-guard
-sudo /opt/xfi-guard/.venv/bin/python -m xfi_guard.daemon --config /opt/xfi-guard/config.toml
+sudo XFI_GUARD_DIR=/opt/xfi-guard bash -c 'curl -fsSL https://raw.githubusercontent.com/deilja/XFI_Guard/main/install.sh | bash'
+```
+
+## Проверка
+
+```bash
+systemctl status xfi-guard --no-pager
+journalctl -u xfi-guard -n 100 --no-pager
+tail -n 20 /var/log/xfi-guard/monitor.jsonl
 ```
 
 ## Telegram Bot
 
-Создайте Telegram-бота через BotFather и подготовьте администратора.
+Создайте Telegram-бота через BotFather и подготовьте Telegram ID администратора.
 
 ```bash
-sudo install -d -m 0700 /etc/xfi-guard
-sudo nano /etc/xfi-guard/bot.env
+install -d -m 0700 /etc/xfi-guard
+nano /etc/xfi-guard/bot.env
+chmod 600 /etc/xfi-guard/bot.env
 ```
 
-Файл:
+Содержимое:
 
 ```text
 XFI_GUARD_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
@@ -80,19 +84,13 @@ XFI_GUARD_ADMIN_IDS=123456789
 XFI_GUARD_ADMIN_IDS=123456789,987654321
 ```
 
-Права:
+Если в репозитории присутствует `systemd/xfi-guard-bot.service`:
 
 ```bash
-sudo chmod 600 /etc/xfi-guard/bot.env
-```
-
-Установите сервис бота, если он присутствует в текущей версии репозитория:
-
-```bash
-sudo install -m 0644 systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now xfi-guard-bot
-sudo systemctl status xfi-guard-bot --no-pager
+install -m 0644 /opt/xfi-guard/systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
+systemctl daemon-reload
+systemctl enable --now xfi-guard-bot
+systemctl status xfi-guard-bot --no-pager
 ```
 
 В Telegram доступны кнопки:
@@ -109,7 +107,7 @@ sudo systemctl status xfi-guard-bot --no-pager
 
 ## Gemini / Groq
 
-AI-провайдер и ключи не нужно прописывать в Git. Настройки управляются из Telegram-бота.
+AI-провайдер и ключи управляются через Telegram и не должны находиться в Git.
 
 В меню **🤖 AI** доступны:
 
@@ -121,17 +119,13 @@ AI-провайдер и ключи не нужно прописывать в Gi
 - проверка API;
 - статус AI.
 
-Настройки сохраняются локально в:
+Настройки сохраняются локально:
 
 ```text
 /var/lib/xfi-guard/ai.json
 ```
 
 Файл должен иметь права `600`.
-
-Для Gemini по умолчанию используется `gemini-2.5-pro`.
-
-Для Groq по умолчанию используется `llama-3.3-70b-versatile`.
 
 ## AI Security Center
 
@@ -142,55 +136,39 @@ AI-провайдер и ключи не нужно прописывать в Gi
 - AI-анализ сводки;
 - обновление статистики.
 
-AI работает только как аналитический слой. Автоматические разрушительные действия не выполняются.
+AI используется как аналитический слой. Разрушительные действия не выполняются автоматически.
 
 ## Конфигурация
 
-Основной конфигурационный файл:
-
 ```text
 /opt/xfi-guard/config.toml
-```
-
-Состояние:
-
-```text
 /var/lib/xfi-guard/state.json
-```
-
-Журнал:
-
-```text
 /var/log/xfi-guard/monitor.jsonl
 ```
-
-## Безопасность
-
-- секреты не должны храниться в Git;
-- API keys хранятся только локально с ограниченными правами;
-- мониторинг по умолчанию read-only;
-- любые потенциально разрушительные действия должны требовать явного подтверждения администратора;
-- Telegram-управление ограничено `XFI_GUARD_ADMIN_IDS`.
 
 ## Обновление
 
 ```bash
 cd /opt/xfi-guard
-sudo git pull --ff-only
-sudo /opt/xfi-guard/.venv/bin/pip install -r requirements.txt 2>/dev/null || true
-sudo systemctl restart xfi-guard
-sudo systemctl restart xfi-guard-bot 2>/dev/null || true
+git pull --ff-only
+/opt/xfi-guard/.venv/bin/pip install -r requirements.txt 2>/dev/null || true
+systemctl restart xfi-guard
+systemctl restart xfi-guard-bot 2>/dev/null || true
 ```
 
 ## Диагностика
 
 ```bash
-sudo systemctl status xfi-guard --no-pager
-sudo journalctl -u xfi-guard -f
-sudo systemctl status xfi-guard-bot --no-pager
-sudo journalctl -u xfi-guard-bot -n 100 --no-pager
+systemctl status xfi-guard --no-pager
+journalctl -u xfi-guard -f
+systemctl status xfi-guard-bot --no-pager
+journalctl -u xfi-guard-bot -n 100 --no-pager
 ```
 
-## Принцип проекта
+## Безопасность
 
-XFI Guard предназначен для безопасного мониторинга VPS и VPN-инфраструктуры. По умолчанию он не изменяет firewall, маршрутизацию, пользователей или системные настройки. Секреты и API-ключи не включаются в репозиторий.
+- секреты не хранятся в Git;
+- API keys хранятся локально с ограниченными правами;
+- мониторинг read-only по умолчанию;
+- потенциально разрушительные действия должны требовать явного подтверждения администратора;
+- Telegram-управление ограничено `XFI_GUARD_ADMIN_IDS`.
