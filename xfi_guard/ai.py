@@ -121,3 +121,21 @@ class AIAnalyzer:
             return out
         except Exception as exc:
             self.last_error = f"Рекомендации AI: {type(exc).__name__}: {exc}"; return []
+
+
+# The Telegram bot already imports AIAnalyzer before constructing its Dispatcher.
+# Install the missing AI settings handlers at Dispatcher creation time without
+# duplicating the large bot module. The import is deliberately lazy to avoid a
+# circular import between ai.py and ai_ui.py.
+try:
+    from aiogram import Dispatcher as _XfiDispatcher
+    if not getattr(_XfiDispatcher, "_xfi_ai_patch", False):
+        _xfi_original_init = _XfiDispatcher.__init__
+        def _xfi_dispatcher_init(self, *args, **kwargs):
+            _xfi_original_init(self, *args, **kwargs)
+            from .ai_ui import install_ai_handlers
+            install_ai_handlers(self)
+        _XfiDispatcher.__init__ = _xfi_dispatcher_init
+        _XfiDispatcher._xfi_ai_patch = True
+except Exception:
+    pass
