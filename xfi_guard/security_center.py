@@ -6,16 +6,23 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from .ai import AIAnalyzer
-from .events import SecurityEvent
+from .events import SecurityEvent, parse_file
+from .config import load_config
 
 
-def summarize(events: list[SecurityEvent], hours: int = 24) -> dict:
+def _load_events() -> list[SecurityEvent]:
+    cfg = load_config()
+    return parse_file(cfg.ssh_log, "ssh") + parse_file(cfg.fail2ban_log, "fail2ban")
+
+
+def summarize(events: list[SecurityEvent] | None = None, hours: int = 24) -> dict:
+    events = events if events is not None else _load_events()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     recent = []
     for event in events:
         try:
             timestamp = datetime.fromisoformat(event.timestamp.replace("Z", "+00:00"))
-        except ValueError:
+        except (ValueError, AttributeError):
             continue
         if timestamp >= cutoff:
             recent.append(event)
@@ -32,9 +39,14 @@ def summarize(events: list[SecurityEvent], hours: int = 24) -> dict:
     }
 
 
-def ai_report(events: list[SecurityEvent], provider: str | None = None) -> str | None:
+def ai_report(events: list[SecurityEvent] | None = None, provider: str | None = None) -> str | None:
+    events = events if events is not None else _load_events()
     summary = summarize(events)
     analyzer = AIAnalyzer(provider)
     if not analyzer.enabled():
         return None
-    return analyzer.analyze({"event_type": "security_summary", "severity": "critical" if summary["critical"] else "warning", "message": summary})
+    return analyzer.analyze({
+        "event_type": "security_summary",
+        "severity": "critical" if summary["critical"] else "warning",
+        "message": summary,
+    })
