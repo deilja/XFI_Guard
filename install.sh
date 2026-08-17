@@ -6,7 +6,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 TTY=/dev/tty
 log(){ printf '\n[XFI Guard] %s\n' "$*"; }
 die(){ printf '\n[XFI Guard] ERROR: %s\n' "$*" >&2; exit 1; }
-ask(){ local __v="$1"; shift; local __x; if [[ -r "$TTY" ]]; then read -r -p "$*" __x < "$TTY"; else read -r -p "$*" __x; fi; printf -v "$__v" '%s' "$__x"; }
+ask(){ local __v="$1"; shift; local __x=""; if [[ -r "$TTY" ]]; then IFS= read -r -p "$*" __x < "$TTY" || true; else IFS= read -r -p "$*" __x || true; fi; printf -v "$__v" '%s' "$__x"; }
 [[ $(id -u) -eq 0 ]] || die "Запустите: sudo bash install.sh"
 command -v apt-get >/dev/null || die "Поддерживаются Ubuntu/Debian"
 export DEBIAN_FRONTEND=noninteractive
@@ -44,8 +44,9 @@ EOF
   fi
   AI_PROVIDER=""
   ask AI_PROVIDER "AI provider [gemini/groq/skip, Enter=gemini]: "
-  AI_PROVIDER="${AI_PROVIDER:-gemini}"
-  case "$AI_PROVIDER" in gemini|groq) ;; skip) AI_PROVIDER="" ;; *) die "AI provider: gemini, groq или skip" ;; esac
+  AI_PROVIDER="$(printf '%s' "$AI_PROVIDER" | tr '[:upper:]' '[:lower:]' | xargs)"
+  [[ -z "$AI_PROVIDER" ]] && AI_PROVIDER=gemini
+  case "$AI_PROVIDER" in gemini|groq) ;; skip) AI_PROVIDER="" ;; *) log "Некорректный ввод AI provider — автоматически выбран Gemini"; AI_PROVIDER=gemini ;; esac
   if [[ -n "$AI_PROVIDER" ]]; then
     cat >/var/lib/xfi-guard/ai.json <<EOF
 {"provider":"$AI_PROVIDER","gemini_model":"gemini-2.5-pro","groq_model":"llama-3.3-70b-versatile","gemini_key":"","groq_key":""}
