@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .alerts import AlertManager
 from .checks import check_disk, check_memory
 from .config import MonitorConfig
 from .events import deduplicate, parse_file
@@ -58,6 +59,7 @@ def write_snapshot(path: str, snapshot: list[dict], events: list[dict] | None = 
 def run_forever(config: MonitorConfig) -> None:
     running = True
     state = StateStore(config.state_file)
+    alerts = AlertManager(cooldown=config.telegram_cooldown_seconds) if config.telegram_enabled else None
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal running
@@ -70,6 +72,10 @@ def run_forever(config: MonitorConfig) -> None:
         snapshot = collect_snapshot(config)
         events = collect_security_events(config, state)
         write_snapshot(config.output_file, snapshot, events)
+        if alerts:
+            for event in events:
+                if alerts.send(event):
+                    LOG.info("security alert sent: %s", event.get("event_type"))
         if events:
             LOG.warning("new security events: %d", len(events))
         LOG.info("monitor snapshot written: %d checks", len(snapshot))
