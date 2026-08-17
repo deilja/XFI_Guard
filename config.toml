@@ -2,6 +2,7 @@
 interval_seconds = 60
 log_level = "INFO"
 output_file = "/var/log/xfi-guard/monitor.jsonl"
+state_file = "/var/lib/xfi-guard/state.json"
 
 [thresholds]
 disk_warning_percent = 85
@@ -10,3 +11,8 @@ memory_warning_percent = 90
 [vpn]
 services = ["xray", "x-ui", "3x-ui"]
 ports = [22, 80, 443, 2053, 2083, 2087, 2096]
+
+[events]
+ssh_log = "/var/log/auth.log"
+fail2ban_log = "/var/log/fail2ban.log"
+max_events_per_cycle = 100
