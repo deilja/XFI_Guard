@@ -1,43 +1,24 @@
-"""Local encrypted-at-rest-ready storage for AI provider settings."""
-
+"""Local storage for AI provider settings."""
 from __future__ import annotations
-
-import json
-import os
+import json, os
 from pathlib import Path
-
 DEFAULT_PATH = "/var/lib/xfi-guard/ai.json"
-# Stable production model; the Telegram UI can query the current API list.
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
-
+DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-20b"
 
 def load(path: str = DEFAULT_PATH) -> dict:
     p = Path(path)
-    if not p.is_file():
-        return {
-            "provider": "gemini",
-            "gemini_model": DEFAULT_GEMINI_MODEL,
-            "groq_model": DEFAULT_GROQ_MODEL,
-            "gemini_key": "",
-            "groq_key": "",
-        }
+    defaults = {"provider":"gemini","gemini_model":DEFAULT_GEMINI_MODEL,"groq_model":DEFAULT_GROQ_MODEL,"openrouter_model":DEFAULT_OPENROUTER_MODEL,"gemini_key":"","groq_key":"","openrouter_key":""}
+    if not p.is_file(): return defaults
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {}
-        data.setdefault("provider", "gemini")
-        data.setdefault("gemini_model", DEFAULT_GEMINI_MODEL)
-        data.setdefault("groq_model", DEFAULT_GROQ_MODEL)
-        data.setdefault("gemini_key", "")
-        data.setdefault("groq_key", "")
+        if not isinstance(data, dict): return defaults
+        for k,v in defaults.items(): data.setdefault(k,v)
         return data
-    except (OSError, json.JSONDecodeError):
-        return {}
-
+    except (OSError, json.JSONDecodeError): return defaults
 
 def save(data: dict, path: str = DEFAULT_PATH) -> None:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    p = Path(path); p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(p, 0o600)
