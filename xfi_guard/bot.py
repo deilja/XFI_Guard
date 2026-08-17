@@ -6,6 +6,7 @@ from .ai import AIAnalyzer
 from .ai_store import load as load_ai, save as save_ai
 from .checks import collect_basic_checks
 from .events import parse_file
+from .attack_surface import collect_attack_surface
 from .security import collect_security_checks
 from .security_center import ai_report, summarize
 from .vpn import collect_vpn_checks
@@ -27,7 +28,7 @@ class SetupStates(StatesGroup):
 def admin(m): return bool(m.from_user and m.from_user.id in ADMIN_IDS)
 def mask(k): return k[:4]+"…"+k[-4:] if len(k)>=8 else ("настроен" if k else "не настроен")
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["🤖 AI","🧠 Центр AI"],["🚫 Блокировка IP","🔄 Проверить сейчас"],["❓ Помощь"]])
+def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["🛡 Картина атак","🤖 AI"],["🧠 Центр AI","🚫 Блокировка IP"],["🔄 Проверить сейчас","❓ Помощь"]])
 def ai_kb(): return kb([["🟢 Gemini","🔵 Groq"],["🔀 Выбрать AI"],["🔑 Ключ Gemini","🔑 Ключ Groq"],["🧠 Модель Gemini","🧠 Модель Groq"],["📋 Модели Groq","✏️ Своя модель Groq"],["🧪 Проверить AI","ℹ️ Статус AI"],["⬅️ Главное меню"]])
 def groq_models_kb():
     rows=[ [x[0] for x in GROQ_MODELS[i:i+2]] for i in range(0,len(GROQ_MODELS),2) ]; rows += [["🔄 Получить модели Groq API"],["✏️ Своя модель Groq"],["⬅️ AI"]]; return kb(rows)
@@ -40,6 +41,14 @@ def events():
     c=load_config(); return parse_file(c.ssh_log,"ssh")+parse_file(c.fail2ban_log,"fail2ban")
 def event_dicts():
     return [{"timestamp":getattr(e,"timestamp",""),"severity":getattr(e,"severity","unknown"),"event_type":getattr(e,"event_type","unknown"),"ip":getattr(e,"ip",None),"user":getattr(e,"user",None),"message":getattr(e,"message","")} for e in events()]
+def attack_surface_text():
+    data=collect_attack_surface(); items=data.get("ips",[])
+    lines=["🛡 Полная картина атак за текущий период", "", f"Fail2Ban: {data.get('fail2ban_count',0)}", f"UFW DENY/REJECT: {data.get('ufw_count',0)}", f"SSH неудачных входов: {data.get('ssh_count',0)}", f"Уникальных IP: {len(items)}", ""]
+    for x in items[:15]:
+        lines.append(f"• {x['ip']} — {x['risk']} ({x['risk_score']}/100) | источники: {', '.join(x['sources'])} | событий: {x['events']}")
+        if x.get('jails'): lines.append(f"  Jail: {', '.join(x['jails'])}")
+        if x.get('reason'): lines.append(f"  Причина: {x['reason'][:180]}")
+    return "\n".join(lines)[:3900]
 def fetch_groq_models(key):
     req=request.Request("https://api.groq.com/openai/v1/models",headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"})
     with request.urlopen(req,timeout=15) as response: data=json.loads(response.read().decode())
@@ -76,22 +85,25 @@ def build_dispatcher():
     async def ev(m):
         if admin(m):
             e=events()[-20:]; t="\n".join(f"{x.severity.upper()} | {x.event_type} | {x.ip or '-'} | {x.user or '-'}" for x in e) or "Нет событий."; await m.answer("📋 Последние события\n\n"+t,reply_markup=main_kb())
+    @dp.message(F.text=="🛡 Картина атак")
+    async def attack_surface(m):
+        if admin(m): await m.answer(attack_surface_text(),reply_markup=main_kb())
     @dp.message(F.text=="🔄 Проверить сейчас")
     async def check(m):
         if admin(m): await m.answer("🔄 Проверка завершена\n\n"+results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()),reply_markup=main_kb())
 
     @dp.message(F.text=="🚫 Блокировка IP")
     async def block_menu(m,state):
-        if admin(m): await state.clear(); await m.answer("🚫 Управление блокировками IP\n\nИИ только рекомендует адреса. Блокировка выполняется только после вашего подтверждения.",reply_markup=block_kb())
+        if admin(m): await state.clear(); await m.answer("🚫 Управление блокировками IP\n\nИИ видит Fail2Ban + UFW + SSH и только рекомендует адреса. Блокировка выполняется только после вашего подтверждения.",reply_markup=block_kb())
     @dp.message(F.text=="🤖 Рекомендации AI")
     async def ai_recommendations(m,state):
         if not admin(m): return
-        await state.clear(); await m.answer("🤖 Анализ подозрительных IP...",reply_markup=block_kb())
+        await state.clear(); await m.answer("🤖 Анализ полной картины атак: SSH + Fail2Ban + UFW...",reply_markup=block_kb())
         recs=AIAnalyzer().recommend_block_ips(event_dicts())
         if not recs:
-            await m.answer("❌ AI не дал рекомендаций. Проверьте AI и наличие событий с публичными IP.",reply_markup=block_kb()); return
+            await m.answer("❌ AI не дал рекомендаций. Проверьте AI, SSH-события, Fail2Ban и UFW.",reply_markup=block_kb()); return
         for r in recs:
-            await m.answer(f"🚨 Рекомендация AI\n\nIP: {r['ip']}\nУверенность: {r['confidence']:.0%}\nПричина: {r['reason']}",reply_markup=kb([[f"🚫 Заблокировать {r['ip']}"],["⬅️ Главное меню"]]))
+            await m.answer(f"🚨 Рекомендация AI\n\nIP: {r['ip']}\nРиск: {r.get('risk','medium').upper()}\nУверенность: {r['confidence']:.0%}\nПричина: {r['reason']}",reply_markup=kb([[f"🚫 Заблокировать {r['ip']}"],["⬅️ Главное меню"]]))
     @dp.message(F.text=="📋 Выбрать IP из событий")
     async def choose_event_ip(m,state):
         if not admin(m): return
@@ -173,7 +185,7 @@ def build_dispatcher():
         if m.text=="🤖 Рекомендации блокировки":
             recs=AIAnalyzer().recommend_block_ips(event_dicts())
             if not recs: await m.answer("❌ AI не дал рекомендаций по блокировке.",reply_markup=center_kb()); return
-            for r in recs: await m.answer(f"🚨 AI рекомендует:\n{r['ip']}\nУверенность: {r['confidence']:.0%}\nПричина: {r['reason']}",reply_markup=kb([[f"🚫 Заблокировать {r['ip']}"],["⬅️ Главное меню"]]))
+            for r in recs: await m.answer(f"🚨 AI рекомендует:\n{r['ip']}\nРиск: {r.get('risk','medium').upper()}\nУверенность: {r['confidence']:.0%}\nПричина: {r['reason']}",reply_markup=kb([[f"🚫 Заблокировать {r['ip']}"],["⬅️ Главное меню"]]))
             return
         s=summarize(events(),24)
         if m.text=="📊 Анализ за 24 часа": t=f"📊 Анализ за 24 часа\n\nСобытий: {s['events']}\nУникальных IP: {s['unique_ips']}\nКритических: {s['critical']}\nПредупреждений: {s['warning']}"
@@ -261,7 +273,7 @@ def build_dispatcher():
     async def back(m,state): await state.clear(); await m.answer("🛡 XFI Guard — главное меню",reply_markup=main_kb())
     @dp.message(F.text=="❓ Помощь")
     async def help(m):
-        if admin(m): await m.answer("❓ Все функции доступны через кнопки.\n\nAI: Gemini/Groq, ключи и модели.\nБлокировка IP: AI-рекомендации, выбор из событий и ручной ввод. Блокировка всегда требует подтверждения.",reply_markup=main_kb())
+        if admin(m): await m.answer("❓ Все функции доступны через кнопки.\n\nAI: Gemini/Groq, ключи и модели.\nКартина атак: Fail2Ban + UFW + SSH с оценкой риска.\nБлокировка IP: AI-рекомендации, выбор из событий и ручной ввод. Блокировка всегда требует подтверждения.",reply_markup=main_kb())
     return dp
 
 async def main():
