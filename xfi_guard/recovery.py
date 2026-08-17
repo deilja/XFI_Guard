@@ -32,18 +32,16 @@ def notify(text: str) -> None:
             print(f"notification failed: {exc}", file=sys.stderr)
 
 
-def healthy() -> bool:
-    return cmd("systemctl", "is-active", SERVICE) == "active"
+def recent_polling() -> bool:
+    return "polling запущен" in cmd("journalctl", "-u", SERVICE, "--since", "90 seconds ago", "--no-pager", "-o", "cat")
 
 
 def main() -> int:
-    if healthy():
-        return 0
     try:
         restart_count = int(cmd("systemctl", "show", SERVICE, "-p", "NRestarts", "--value") or "0")
     except ValueError:
         return 0
-    if restart_count < 3:
+    if restart_count < 3 or recent_polling():
         return 0
     backup = cmd("git", "rev-parse", BACKUP_BRANCH)
     if not backup:
@@ -60,7 +58,7 @@ def main() -> int:
     subprocess.run(["git", "reset", "--hard", backup], cwd=REPO, check=False, timeout=120)
     subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30)
     subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60)
-    if healthy():
+    if cmd("systemctl", "is-active", SERVICE) == "active":
         notify(f"✅ XFI Guard восстановлен\n\nРабочая версия: {backup[:8]}")
         return 0
     notify("❌ Критическая ошибка: автоматическое восстановление XFI Guard не удалось.")
