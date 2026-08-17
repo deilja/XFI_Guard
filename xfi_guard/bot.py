@@ -1,37 +1,35 @@
-"""Admin Telegram bot with button-driven XFI Guard controls."""
+"""Admin Telegram bot with button-driven XFI Guard controls and AI provider setup."""
 
 from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 
+from .ai import AIAnalyzer
+from .ai_store import load as load_ai, save as save_ai
 from .checks import collect_basic_checks
 from .config import load_config
 from .events import parse_file
-from .gemini import GeminiAnalyzer
-from .gemini_store import DEFAULT_PATH, DEFAULT_MODEL, load, save
 from .security import collect_security_checks
 from .vpn import collect_vpn_checks
 
-try:
-    from aiogram import Bot, Dispatcher, F
-    from aiogram.filters import Command
-    from aiogram.fsm.context import FSMContext
-    from aiogram.fsm.state import State, StatesGroup
-    from aiogram.fsm.storage.memory import MemoryStorage
-    from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
-except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("Install aiogram to run the XFI Guard bot") from exc
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 TOKEN = os.getenv("XFI_GUARD_BOT_TOKEN")
 ADMIN_IDS = {int(value) for value in os.getenv("XFI_GUARD_ADMIN_IDS", "").split(",") if value.strip().isdigit()}
 CONFIG_PATH = os.getenv("XFI_GUARD_CONFIG", "config.toml")
 
-
 class SetupStates(StatesGroup):
-    waiting_key = State()
-    waiting_model = State()
+    waiting_provider = State()
+    waiting_gemini_key = State()
+    waiting_groq_key = State()
+    waiting_gemini_model = State()
+    waiting_groq_model = State()
 
 
 def is_admin(message: Message) -> bool:
@@ -39,248 +37,158 @@ def is_admin(message: Message) -> bool:
 
 
 def mask_key(key: str) -> str:
-    if len(key) < 8:
-        return "configured"
-    return key[:4] + "…" + key[-4:]
+    return key[:4] + "…" + key[-4:] if len(key) >= 8 else ("configured" if key else "не настроен")
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🔐 Безопасность")],
-            [KeyboardButton(text="🛡 Fail2Ban"), KeyboardButton(text="🔥 UFW")],
-            [KeyboardButton(text="🌐 VPN/Xray"), KeyboardButton(text="📋 События")],
-            [KeyboardButton(text="🤖 Gemini"), KeyboardButton(text="⚙️ Настройки")],
-            [KeyboardButton(text="🔄 Проверка сейчас"), KeyboardButton(text="❓ Помощь")],
-        ], resize_keyboard=True, is_persistent=True,
-    )
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🔐 Безопасность")],
+        [KeyboardButton(text="🛡 Fail2Ban"), KeyboardButton(text="🔥 UFW")],
+        [KeyboardButton(text="🌐 VPN/Xray"), KeyboardButton(text="📋 События")],
+        [KeyboardButton(text="🤖 AI"), KeyboardButton(text="⚙️ Настройки")],
+        [KeyboardButton(text="🔄 Проверка сейчас"), KeyboardButton(text="❓ Помощь")],
+    ], resize_keyboard=True, is_persistent=True)
 
 
-def gemini_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🔑 Установить Gemini API key")],
-            [KeyboardButton(text="🧠 Выбрать модель"), KeyboardButton(text="ℹ️ Gemini status")],
-            [KeyboardButton(text="🧪 Тест Gemini"), KeyboardButton(text="⬅️ Главное меню")],
-        ], resize_keyboard=True,
-    )
+def ai_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="🟢 Gemini"), KeyboardButton(text="🔵 Groq")],
+        [KeyboardButton(text="🔀 Выбрать AI")],
+        [KeyboardButton(text="🔑 Gemini API key"), KeyboardButton(text="🔑 Groq API key")],
+        [KeyboardButton(text="🧠 Gemini модель"), KeyboardButton(text="🧠 Groq модель")],
+        [KeyboardButton(text="🧪 Проверить AI"), KeyboardButton(text="ℹ️ AI статус")],
+        [KeyboardButton(text="⬅️ Главное меню")],
+    ], resize_keyboard=True)
 
 
 def format_results(results: list) -> str:
-    lines = []
-    for item in results:
-        status = getattr(item, "status", "unknown").upper()
-        lines.append(f"{status}: {item.name} — {item.message}")
-    return "\n".join(lines)[:3800] or "Нет данных."
-
-
-def read_events(config_path: str) -> str:
-    config = load_config(config_path)
-    paths = [(config.ssh_log, "SSH"), (config.fail2ban_log, "Fail2Ban")]
-    found = []
-    for path, source in paths:
-        for event in parse_file(path, source.lower())[-10:]:
-            found.append(f"[{event.severity.upper()}] {source}: {event.message}")
-    return "\n".join(found)[-3800:] if found else "Новых распознанных событий в доступных журналах нет."
+    return "\n".join(f"{getattr(x,'status','unknown').upper()}: {x.name} — {x.message}" for x in results)[:3800] or "Нет данных."
 
 
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
-    async def require_admin(message: Message) -> bool:
-        if not is_admin(message):
-            return False
-        return True
-
-    async def show_menu(message: Message) -> None:
-        if await require_admin(message):
-            await message.answer("XFI Guard — панель управления", reply_markup=main_keyboard())
-
-    async def show_gemini(message: Message) -> None:
-        if not await require_admin(message):
-            return
-        current = load()
-        key = current.get("api_key", "")
-        await message.answer(
-            f"Gemini: {'ON' if key else 'OFF'}\nМодель: {current.get('model', DEFAULT_MODEL)}\n"
-            f"Ключ: {mask_key(key) if key else 'не настроен'}",
-            reply_markup=gemini_keyboard(),
-        )
+    async def admin(message: Message) -> bool:
+        return is_admin(message)
 
     @dp.message(Command("start"))
-    async def start(message: Message, state: FSMContext) -> None:
+    async def start(message: Message, state: FSMContext):
         await state.clear()
-        await show_menu(message)
-
-    @dp.message(Command("help"))
-    @dp.message(F.text == "❓ Помощь")
-    async def help_command(message: Message) -> None:
-        if await require_admin(message):
-            await message.answer(
-                "Команды полностью доступны кнопками.\n\n"
-                "/start /help /status /security /fail2ban /ufw /vpn /events /check\n"
-                "/gemini /gemini_key /gemini_model /gemini_status",
-                reply_markup=main_keyboard(),
-            )
+        if await admin(message): await message.answer("XFI Guard — панель управления", reply_markup=main_keyboard())
 
     @dp.message(Command("status"))
     @dp.message(F.text == "📊 Статус")
-    async def status(message: Message) -> None:
-        if await require_admin(message):
-            results = collect_basic_checks() + collect_security_checks() + collect_vpn_checks()
-            await message.answer("📊 XFI Guard status\n\n" + format_results(results), reply_markup=main_keyboard())
+    async def status(message: Message):
+        if await admin(message): await message.answer("📊 XFI Guard\n\n" + format_results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()), reply_markup=main_keyboard())
 
     @dp.message(Command("security"))
     @dp.message(F.text == "🔐 Безопасность")
-    async def security(message: Message) -> None:
-        if await require_admin(message):
-            await message.answer("🔐 Security\n\n" + format_results(collect_security_checks()), reply_markup=main_keyboard())
+    async def security(message: Message):
+        if await admin(message): await message.answer("🔐 Security\n\n" + format_results(collect_security_checks()), reply_markup=main_keyboard())
 
     @dp.message(Command("fail2ban"))
     @dp.message(F.text == "🛡 Fail2Ban")
-    async def fail2ban(message: Message) -> None:
-        if await require_admin(message):
-            result = [x for x in collect_security_checks() if x.name == "fail2ban"]
-            await message.answer("🛡 Fail2Ban\n\n" + format_results(result), reply_markup=main_keyboard())
+    async def fail2ban(message: Message):
+        if await admin(message): await message.answer("🛡 Fail2Ban\n\n" + format_results([x for x in collect_security_checks() if x.name == "fail2ban"]), reply_markup=main_keyboard())
 
     @dp.message(Command("ufw"))
     @dp.message(F.text == "🔥 UFW")
-    async def ufw(message: Message) -> None:
-        if await require_admin(message):
-            result = [x for x in collect_security_checks() if x.name == "ufw"]
-            await message.answer("🔥 UFW\n\n" + format_results(result), reply_markup=main_keyboard())
+    async def ufw(message: Message):
+        if await admin(message): await message.answer("🔥 UFW\n\n" + format_results([x for x in collect_security_checks() if x.name == "ufw"]), reply_markup=main_keyboard())
 
     @dp.message(Command("vpn"))
     @dp.message(F.text == "🌐 VPN/Xray")
-    async def vpn(message: Message) -> None:
-        if await require_admin(message):
-            await message.answer("🌐 VPN/Xray\n\n" + format_results(collect_vpn_checks()), reply_markup=main_keyboard())
-
-    @dp.message(Command("events"))
-    @dp.message(F.text == "📋 События")
-    async def events(message: Message) -> None:
-        if await require_admin(message):
-            await message.answer("📋 Последние события\n\n" + read_events(CONFIG_PATH), reply_markup=main_keyboard())
+    async def vpn(message: Message):
+        if await admin(message): await message.answer("🌐 VPN/Xray\n\n" + format_results(collect_vpn_checks()), reply_markup=main_keyboard())
 
     @dp.message(Command("check"))
     @dp.message(F.text == "🔄 Проверка сейчас")
-    async def check(message: Message) -> None:
-        if await require_admin(message):
-            results = collect_basic_checks() + collect_security_checks() + collect_vpn_checks()
-            await message.answer("🔄 Проверка завершена\n\n" + format_results(results), reply_markup=main_keyboard())
+    async def check(message: Message):
+        if await admin(message): await message.answer("🔄 Проверка\n\n" + format_results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()), reply_markup=main_keyboard())
 
-    @dp.message(Command("gemini"))
-    @dp.message(F.text == "🤖 Gemini")
-    async def gemini_help(message: Message) -> None:
-        await show_gemini(message)
+    @dp.message(Command("ai"))
+    @dp.message(F.text == "🤖 AI")
+    async def ai_menu(message: Message):
+        if await admin(message):
+            cfg=load_ai(); await message.answer(f"AI: {cfg.get('provider','gemini').upper()}\nGemini: {mask_key(cfg.get('gemini_key',''))} / {cfg.get('gemini_model','gemini-2.5-pro')}\nGroq: {mask_key(cfg.get('groq_key',''))} / {cfg.get('groq_model','llama-3.3-70b-versatile')}", reply_markup=ai_keyboard())
 
-    @dp.message(Command("gemini_key"))
-    async def gemini_key_command(message: Message, state: FSMContext) -> None:
-        if not await require_admin(message):
-            return
-        args = message.text.partition(" ")[2].strip() if message.text else ""
-        if args:
-            save(args, load().get("model", DEFAULT_MODEL))
-            try: await message.delete()
-            except Exception: pass
-            await message.answer("Gemini API key сохранён.", reply_markup=gemini_keyboard())
-            return
-        await state.set_state(SetupStates.waiting_key)
-        await message.answer("Отправьте API key следующим сообщением. Сообщение будет удалено.", reply_markup=gemini_keyboard())
+    @dp.message(F.text.in_({"🟢 Gemini", "🔵 Groq", "🔀 Выбрать AI"}))
+    async def choose_provider(message: Message, state: FSMContext):
+        if not await admin(message): return
+        if message.text == "🟢 Gemini": provider="gemini"
+        elif message.text == "🔵 Groq": provider="groq"
+        else:
+            await state.set_state(SetupStates.waiting_provider); await message.answer("Введите: gemini или groq", reply_markup=ai_keyboard()); return
+        cfg=load_ai(); cfg["provider"]=provider; save_ai(cfg); await message.answer(f"AI провайдер: {provider.upper()}", reply_markup=ai_keyboard())
 
-    @dp.message(F.text == "🔑 Установить Gemini API key")
-    async def gemini_key_button(message: Message, state: FSMContext) -> None:
-        if await require_admin(message):
-            await state.set_state(SetupStates.waiting_key)
-            await message.answer("Отправьте Gemini API key следующим сообщением. Оно будет удалено.")
+    @dp.message(SetupStates.waiting_provider)
+    async def receive_provider(message: Message, state: FSMContext):
+        if not await admin(message): return
+        provider=(message.text or "").strip().lower()
+        if provider not in {"gemini","groq"}: await message.answer("Введите только gemini или groq"); return
+        cfg=load_ai(); cfg["provider"]=provider; save_ai(cfg); await state.clear(); await message.answer(f"AI провайдер: {provider.upper()}", reply_markup=ai_keyboard())
 
-    @dp.message(SetupStates.waiting_key)
-    async def receive_gemini_key(message: Message, state: FSMContext) -> None:
-        if not await require_admin(message):
-            return
-        key = (message.text or "").strip()
-        if len(key) < 20:
-            await message.answer("Ключ выглядит слишком коротким. Отправьте корректный Gemini API key.")
-            return
-        save(key, load().get("model", DEFAULT_MODEL))
-        await state.clear()
+    async def ask_key(message: Message, state: FSMContext, provider: str):
+        if await admin(message): await state.set_state(SetupStates.waiting_gemini_key if provider=="gemini" else SetupStates.waiting_groq_key); await message.answer(f"Отправьте {provider} API key. Сообщение будет удалено.")
+
+    @dp.message(F.text == "🔑 Gemini API key")
+    async def gemini_key(message: Message, state: FSMContext): await ask_key(message,state,"gemini")
+    @dp.message(F.text == "🔑 Groq API key")
+    async def groq_key(message: Message, state: FSMContext): await ask_key(message,state,"groq")
+
+    async def save_key(message: Message, state: FSMContext, provider: str):
+        if not await admin(message): return
+        key=(message.text or "").strip()
+        if len(key)<20: await message.answer("Ключ выглядит некорректным."); return
+        cfg=load_ai(); cfg["gemini_key" if provider=="gemini" else "groq_key"]=key; save_ai(cfg); await state.clear()
         try: await message.delete()
         except Exception: pass
-        await message.answer("Gemini API key сохранён в защищённом локальном хранилище.", reply_markup=gemini_keyboard())
+        await message.answer(f"{provider.upper()} API key сохранён.", reply_markup=ai_keyboard())
 
-    @dp.message(Command("gemini_model"))
-    async def gemini_model_command(message: Message, state: FSMContext) -> None:
-        if not await require_admin(message):
-            return
-        model = message.text.partition(" ")[2].strip() if message.text else ""
-        if model:
-            save(load().get("api_key", ""), model)
-            await message.answer(f"Модель Gemini установлена: {model}", reply_markup=gemini_keyboard())
-            return
-        await state.set_state(SetupStates.waiting_model)
-        await message.answer("Введите название модели, например: gemini-2.5-pro")
+    @dp.message(SetupStates.waiting_gemini_key)
+    async def save_gemini(message: Message,state:FSMContext): await save_key(message,state,"gemini")
+    @dp.message(SetupStates.waiting_groq_key)
+    async def save_groq(message: Message,state:FSMContext): await save_key(message,state,"groq")
 
-    @dp.message(F.text == "🧠 Выбрать модель")
-    async def gemini_model_button(message: Message, state: FSMContext) -> None:
-        if await require_admin(message):
-            await state.set_state(SetupStates.waiting_model)
-            await message.answer("Введите название модели, например: gemini-2.5-pro")
+    @dp.message(F.text == "🧠 Gemini модель")
+    async def gemini_model(message: Message,state:FSMContext):
+        if await admin(message): await state.set_state(SetupStates.waiting_gemini_model); await message.answer("Введите Gemini model")
+    @dp.message(F.text == "🧠 Groq модель")
+    async def groq_model(message: Message,state:FSMContext):
+        if await admin(message): await state.set_state(SetupStates.waiting_groq_model); await message.answer("Введите Groq model")
 
-    @dp.message(SetupStates.waiting_model)
-    async def receive_gemini_model(message: Message, state: FSMContext) -> None:
-        if not await require_admin(message):
-            return
-        model = (message.text or "").strip()
-        if not model or any(ch.isspace() for ch in model):
-            await message.answer("Некорректное имя модели. Пример: gemini-2.5-pro")
-            return
-        save(load().get("api_key", ""), model)
-        await state.clear()
-        await message.answer(f"Модель Gemini установлена: {model}", reply_markup=gemini_keyboard())
+    async def save_model(message: Message,state:FSMContext,provider:str):
+        if not await admin(message): return
+        model=(message.text or "").strip()
+        if not model or any(ch.isspace() for ch in model): await message.answer("Некорректное имя модели"); return
+        cfg=load_ai(); cfg["gemini_model" if provider=="gemini" else "groq_model"]=model; save_ai(cfg); await state.clear(); await message.answer(f"Модель {provider.upper()}: {model}", reply_markup=ai_keyboard())
+    @dp.message(SetupStates.waiting_gemini_model)
+    async def save_gm(message: Message,state:FSMContext): await save_model(message,state,"gemini")
+    @dp.message(SetupStates.waiting_groq_model)
+    async def save_gr(message: Message,state:FSMContext): await save_model(message,state,"groq")
 
-    @dp.message(Command("gemini_status"))
-    @dp.message(F.text == "ℹ️ Gemini status")
-    async def gemini_status(message: Message) -> None:
-        await show_gemini(message)
+    @dp.message(F.text == "🧪 Проверить AI")
+    async def test_ai(message: Message):
+        if await admin(message):
+            analyzer=AIAnalyzer(); result=analyzer.analyze({"event_type":"manual_test","severity":"warning","message":"XFI Guard AI connectivity test"}); await message.answer("🧪 AI test\n\n"+(result or "AI API не вернул результат."),reply_markup=ai_keyboard())
 
-    @dp.message(F.text == "🧪 Тест Gemini")
-    async def gemini_test(message: Message) -> None:
-        if not await require_admin(message):
-            return
-        analyzer = GeminiAnalyzer()
-        if not analyzer.enabled():
-            await message.answer("Gemini выключен: сначала задайте API key.", reply_markup=gemini_keyboard())
-            return
-        result = analyzer.analyze({"event_type": "manual_test", "severity": "warning", "message": "XFI Guard Telegram Gemini connectivity test"})
-        await message.answer("🧪 Gemini test\n\n" + (result or "Gemini API не вернул результат."), reply_markup=gemini_keyboard())
-
-    @dp.message(F.text == "⚙️ Настройки")
-    async def settings(message: Message) -> None:
-        if await require_admin(message):
-            config = load_config(CONFIG_PATH)
-            await message.answer(
-                f"⚙️ Настройки\nИнтервал: {config.interval_seconds}s\n"
-                f"Telegram alerts: {'ON' if config.telegram_enabled else 'OFF'}\n"
-                f"Gemini: {'ON' if config.gemini_enabled else 'OFF'}\nModel: {config.gemini_model}",
-                reply_markup=main_keyboard(),
-            )
+    @dp.message(F.text == "ℹ️ AI статус")
+    async def ai_status(message: Message):
+        if await admin(message):
+            cfg=load_ai(); a=AIAnalyzer(); await message.answer(f"Провайдер: {cfg.get('provider','gemini').upper()}\nАктивен: {'YES' if a.enabled() else 'NO'}\nGemini: {mask_key(cfg.get('gemini_key',''))}\nGroq: {mask_key(cfg.get('groq_key',''))}",reply_markup=ai_keyboard())
 
     @dp.message(F.text == "⬅️ Главное меню")
-    async def back(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        await show_menu(message)
-
+    async def back(message: Message,state:FSMContext): await state.clear(); await start(message,state)
+    @dp.message(Command("help"), F.text == "❓ Помощь")
+    async def help_message(message: Message):
+        if await admin(message): await message.answer("Все функции доступны кнопками. AI → выбор Gemini/Groq, ключи, модели, тест и статус.",reply_markup=main_keyboard())
+    @dp.message(F.text == "⚙️ Настройки")
+    async def settings(message: Message):
+        if await admin(message): await message.answer("⚙️ Настройки XFI Guard",reply_markup=main_keyboard())
     return dp
 
+async def main():
+    if not TOKEN or not ADMIN_IDS: raise RuntimeError("XFI_GUARD_BOT_TOKEN and XFI_GUARD_ADMIN_IDS are required")
+    await build_dispatcher().start_polling(Bot(TOKEN))
 
-async def main() -> None:
-    if not TOKEN:
-        raise RuntimeError("XFI_GUARD_BOT_TOKEN is not configured")
-    if not ADMIN_IDS:
-        raise RuntimeError("XFI_GUARD_ADMIN_IDS is not configured")
-    bot = Bot(TOKEN)
-    await build_dispatcher().start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())
