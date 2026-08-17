@@ -11,7 +11,9 @@ from pathlib import Path
 
 from .checks import check_disk, check_memory
 from .config import MonitorConfig
+from .events import deduplicate, parse_file
 from .security import collect_security_checks
+from .state import StateStore
 from .vpn import check_listening_ports, check_service_candidates
 
 LOG = logging.getLogger("xfi_guard.monitor")
@@ -28,12 +30,26 @@ def collect_snapshot(config: MonitorConfig) -> list[dict]:
     return [item.to_dict() for item in results]
 
 
-def write_snapshot(path: str, snapshot: list[dict]) -> None:
+def collect_security_events(config: MonitorConfig, state: StateStore) -> list[dict]:
+    events = parse_file(config.ssh_log, "ssh") + parse_file(config.fail2ban_log, "fail2ban")
+    fresh = []
+    for event in deduplicate(events)[-config.max_events_per_cycle:]:
+        if state.seen(event.fingerprint):
+            continue
+        state.mark_seen(event.fingerprint, event.timestamp)
+        fresh.append(event.to_dict())
+    if fresh:
+        state.save()
+    return fresh
+
+
+def write_snapshot(path: str, snapshot: list[dict], events: list[dict] | None = None) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "results": snapshot,
+        "events": events or [],
     }
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -41,6 +57,7 @@ def write_snapshot(path: str, snapshot: list[dict]) -> None:
 
 def run_forever(config: MonitorConfig) -> None:
     running = True
+    state = StateStore(config.state_file)
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal running
@@ -51,7 +68,10 @@ def run_forever(config: MonitorConfig) -> None:
     LOG.info("XFI Guard monitor started; interval=%ss", config.interval_seconds)
     while running:
         snapshot = collect_snapshot(config)
-        write_snapshot(config.output_file, snapshot)
+        events = collect_security_events(config, state)
+        write_snapshot(config.output_file, snapshot, events)
+        if events:
+            LOG.warning("new security events: %d", len(events))
         LOG.info("monitor snapshot written: %d checks", len(snapshot))
         for _ in range(config.interval_seconds):
             if not running:
