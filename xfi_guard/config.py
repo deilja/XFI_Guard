@@ -20,6 +20,8 @@ class MonitorConfig:
     ssh_log: str = "/var/log/auth.log"
     fail2ban_log: str = "/var/log/fail2ban.log"
     max_events_per_cycle: int = 100
+    telegram_enabled: bool = False
+    telegram_cooldown_seconds: int = 300
 
 
 def load_config(path: str | Path = "config.toml") -> MonitorConfig:
@@ -32,6 +34,7 @@ def load_config(path: str | Path = "config.toml") -> MonitorConfig:
     thresholds = data.get("thresholds", {})
     vpn = data.get("vpn", {})
     events = data.get("events", {})
+    telegram = data.get("telegram", {})
     return MonitorConfig(
         interval_seconds=max(5, int(monitor.get("interval_seconds", 60))),
         log_level=str(monitor.get("log_level", "INFO")).upper(),
@@ -44,4 +47,6 @@ def load_config(path: str | Path = "config.toml") -> MonitorConfig:
         ssh_log=str(events.get("ssh_log", "/var/log/auth.log")),
         fail2ban_log=str(events.get("fail2ban_log", "/var/log/fail2ban.log")),
         max_events_per_cycle=max(1, int(events.get("max_events_per_cycle", 100))),
+        telegram_enabled=bool(telegram.get("enabled", False)),
+        telegram_cooldown_seconds=max(0, int(telegram.get("cooldown_seconds", 300))),
     )
