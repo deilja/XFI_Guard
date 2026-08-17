@@ -11,13 +11,11 @@ import os
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
 REPO = Path("/opt/xfi-guard")
 SERVICE = "xfi-guard-bot"
-ENV_FILE = Path("/etc/xfi-guard/bot.env")
 GITHUB_API = "https://api.github.com/repos/deilja/XFI_Guard/commits/main"
 LOCK_FILE = Path("/run/xfi-guard-update.lock")
 
@@ -47,7 +45,10 @@ def notify(text: str, keyboard: list[list[dict]] | None = None) -> bool:
 
 
 def github_head() -> str:
-    req = urllib.request.Request(GITHUB_API, headers={"Accept": "application/vnd.github+json", "User-Agent": "XFI-Guard-Updater"})
+    req = urllib.request.Request(
+        GITHUB_API,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "XFI-Guard-Updater"},
+    )
     with urllib.request.urlopen(req, timeout=20) as response:
         return str(json.loads(response.read().decode())["sha"])
 
@@ -73,10 +74,12 @@ def release_lock() -> None:
         pass
 
 
-def bot_healthy(wait: int = 15) -> bool:
+def bot_healthy(wait: int = 20) -> bool:
     deadline = time.time() + wait
     while time.time() < deadline:
-        status = subprocess.run(["systemctl", "is-active", SERVICE], text=True, capture_output=True).stdout.strip()
+        status = subprocess.run(
+            ["systemctl", "is-active", SERVICE], text=True, capture_output=True
+        ).stdout.strip()
         if status == "active":
             logs = subprocess.run(
                 ["journalctl", "-u", SERVICE, "-n", "40", "--no-pager", "-o", "cat"],
@@ -89,12 +92,13 @@ def bot_healthy(wait: int = 15) -> bool:
 
 
 def validate() -> None:
-    py = str(REPO / ".venv/bin/python")
-    if not Path(py).exists():
+    py = REPO / ".venv/bin/python"
+    if not py.exists():
         raise RuntimeError(f"Не найден Python venv: {py}")
-    run(py, "-m", "compileall", "-q", "xfi_guard", timeout=120)
-    run(py, "-m", "xfi_guard.bot", "--help", check=False, timeout=15)
-    # The previous command may simply enter polling; never use its result as health.
+    run(str(py), "-m", "compileall", "-q", "xfi_guard", timeout=120)
+    probe = run(str(py), "-c", "import xfi_guard.bot; print('IMPORT_OK')", timeout=30)
+    if "IMPORT_OK" not in probe.stdout:
+        raise RuntimeError("Не удалось импортировать xfi_guard.bot")
 
 
 def check_update() -> int:
@@ -105,15 +109,15 @@ def check_update() -> int:
         remote = github_head()
         if current == remote:
             return 0
-        short_current, short_remote = current[:8], remote[:8]
         notify(
             "🆕 Доступно обновление XFI Guard\n\n"
-            f"Текущая версия: {short_current}\n"
-            f"Новая версия: {short_remote}\n\n"
-            "Обновление выполнится только после подтверждения."
-        , [[{"text": "⬆️ Обновить XFI Guard", "callback_data": "xfi_update"}]])
+            f"Текущая версия: {current[:8]}\n"
+            f"Новая версия: {remote[:8]}\n\n"
+            "Обновление выполнится только после подтверждения.",
+            [[{"text": "⬆️ Обновить XFI Guard", "callback_data": "xfi_update"}]],
+        )
         print(f"Update available: {current} -> {remote}")
-        return 10
+        return 0
     except Exception as exc:
         print(f"Update check failed: {exc}", file=sys.stderr)
         return 1
@@ -135,7 +139,6 @@ def apply_update() -> int:
             notify("ℹ️ Обновление уже не требуется. Сервер работает на актуальной версии.")
             return 0
 
-        # The server is a deployment checkout. Preserve a rollback point in git.
         run("git", "branch", "-f", "xfi-guard-pre-update", old)
         run("git", "reset", "--hard", "origin/main")
 
@@ -146,7 +149,7 @@ def apply_update() -> int:
         subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
         subprocess.run(["systemctl", "restart", SERVICE], check=True, timeout=60)
 
-        if bot_healthy(20):
+        if bot_healthy():
             notify(
                 "✅ XFI Guard успешно обновлён\n\n"
                 f"Было: {old[:8]}\n"
@@ -154,19 +157,17 @@ def apply_update() -> int:
                 "Бот снова работает."
             )
             return 0
-
         raise RuntimeError("Новая версия не прошла проверку работоспособности")
     except Exception as exc:
+        rollback_ok = False
         if old:
             try:
                 run("git", "reset", "--hard", old, timeout=120)
                 subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30)
                 subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60)
-                rollback_ok = bot_healthy(20)
+                rollback_ok = bot_healthy()
             except Exception:
                 rollback_ok = False
-        else:
-            rollback_ok = False
         notify(
             "❌ Обновление XFI Guard не удалось\n\n"
             f"Ошибка: {str(exc)[:700]}\n\n"
