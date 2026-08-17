@@ -13,6 +13,7 @@ from .alerts import AlertManager
 from .checks import check_disk, check_memory
 from .config import MonitorConfig
 from .events import deduplicate, parse_file
+from .gemini import GeminiAnalyzer
 from .security import collect_security_checks
 from .state import StateStore
 from .vpn import check_listening_ports, check_service_candidates
@@ -60,6 +61,7 @@ def run_forever(config: MonitorConfig) -> None:
     running = True
     state = StateStore(config.state_file)
     alerts = AlertManager(cooldown=config.telegram_cooldown_seconds) if config.telegram_enabled else None
+    gemini = GeminiAnalyzer(model=config.gemini_model) if config.gemini_enabled else None
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal running
@@ -71,6 +73,11 @@ def run_forever(config: MonitorConfig) -> None:
     while running:
         snapshot = collect_snapshot(config)
         events = collect_security_events(config, state)
+        if gemini and gemini.enabled():
+            for event in events[:config.gemini_max_events_per_cycle]:
+                analysis = gemini.analyze(event)
+                if analysis:
+                    event["ai_analysis"] = analysis
         write_snapshot(config.output_file, snapshot, events)
         if alerts:
             for event in events:
