@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import Any
+from typing import Any, ClassVar
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -30,8 +30,6 @@ def _is_main_menu(texts: list[str]) -> bool:
 
 
 def _back_target(texts: list[str]) -> str:
-    # AI model/key submenus return to the AI menu; security/IP submenus return
-    # to the main menu. This keeps the existing message handlers unchanged.
     ai_markers = {
         "🧠 Модель Gemini", "🧠 Модель Groq", "📋 Модели Gemini",
         "📋 Модели Groq", "🔑 Ключ Gemini", "🔑 Ключ Groq",
@@ -43,7 +41,7 @@ def _back_target(texts: list[str]) -> str:
 class InlineMenuMarkup(InlineKeyboardMarkup):
     """Compatibility replacement for ReplyKeyboardMarkup used by bot.py."""
 
-    xfi_inline_menu = True
+    xfi_inline_menu: ClassVar[bool] = True
 
     def __init__(self, *, keyboard: list[list[Any]], **_: Any):
         texts: list[str] = []
@@ -51,8 +49,6 @@ class InlineMenuMarkup(InlineKeyboardMarkup):
             for item in row:
                 texts.append(getattr(item, "text", None) or str(item))
 
-        # Remove the old navigation labels from the keyboard and replace them
-        # with the unified navigation row requested for XFI Guard.
         cleaned = [
             [getattr(item, "text", None) or str(item) for item in row]
             for row in keyboard
@@ -82,8 +78,6 @@ class InlineMenuMarkup(InlineKeyboardMarkup):
         super().__init__(inline_keyboard=rows)
 
 
-# __init__.py imports menu_manager before bot.py imports ReplyKeyboardMarkup.
-# Existing kb() functions therefore produce inline keyboards automatically.
 import aiogram.types as _aiogram_types
 _aiogram_types.ReplyKeyboardMarkup = InlineMenuMarkup
 
@@ -112,7 +106,6 @@ async def _send_message_with_menu_cleanup(self: Bot, chat_id: int | str, text: s
 
 
 async def _callback_bridge(callback: CallbackQuery, dispatcher: Dispatcher) -> None:
-    """Turn an inline-button press into the existing message-handler event."""
     if not callback.message or not callback.data:
         await callback.answer()
         return
