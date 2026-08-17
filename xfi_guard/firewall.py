@@ -43,19 +43,55 @@ def unblock_ip(ip: str) -> tuple[bool, str]:
     return False, f"Не удалось снять блокировку {ip}: {output[-500:]}"
 
 
-def list_blocked_ips() -> list[str]:
-    code, stdout, stderr = _run(["ufw", "status", "number"])
-    if code != 0:
-        return []
+def _extract_public_ips(text: str) -> list[str]:
     ips: list[str] = []
-    for line in stdout.splitlines():
-        found = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", line)
-        for candidate in found:
-            try:
-                ip = ipaddress.ip_address(candidate)
-                if ip.version == 4 and ip.is_global and ip.compressed not in ips:
-                    if "DENY" in line.upper() or "REJECT" in line.upper():
-                        ips.append(ip.compressed)
-            except ValueError:
-                continue
+    for candidate in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text):
+        try:
+            ip = ipaddress.ip_address(candidate)
+            if ip.version == 4 and ip.is_global and ip.compressed not in ips:
+                ips.append(ip.compressed)
+        except ValueError:
+            continue
     return ips
+
+
+def list_blocked_ips() -> list[str]:
+    """Read public deny/reject IPs using several UFW views.
+
+    UFW output differs between versions/locales. ``ufw show added`` is the
+    persistent-rule view, while ``status numbered`` is the human-facing view.
+    We combine both and only return public IPv4 addresses from deny/reject
+    rules. This function is read-only.
+    """
+    found: list[str] = []
+
+    code, stdout, stderr = _run(["ufw", "show", "added"])
+    if code == 0:
+        for line in stdout.splitlines():
+            upper = line.upper()
+            if "DENY" not in upper and "REJECT" not in upper:
+                continue
+            for ip in _extract_public_ips(line):
+                if ip not in found:
+                    found.append(ip)
+
+    code, stdout, stderr = _run(["ufw", "status", "number"])
+    if code == 0:
+        for line in stdout.splitlines():
+            upper = line.upper()
+            if "DENY" not in upper and "REJECT" not in upper:
+                continue
+            for ip in _extract_public_ips(line):
+                if ip not in found:
+                    found.append(ip)
+
+    # Last-resort fallback for installations where UFW's status command is
+    # unavailable but its persistent user rules are readable.
+    if not found:
+        code, stdout, stderr = _run(["grep", "-E", "^-A ufw-user-input.*(DROP|REJECT)", "/etc/ufw/user.rules"])
+        if code in (0, 1):
+            for ip in _extract_public_ips(stdout):
+                if ip not in found:
+                    found.append(ip)
+
+    return found
