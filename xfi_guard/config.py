@@ -22,6 +22,9 @@ class MonitorConfig:
     max_events_per_cycle: int = 100
     telegram_enabled: bool = False
     telegram_cooldown_seconds: int = 300
+    gemini_enabled: bool = False
+    gemini_model: str = "gemini-2.5-pro"
+    gemini_max_events_per_cycle: int = 10
 
 
 def load_config(path: str | Path = "config.toml") -> MonitorConfig:
@@ -35,6 +38,7 @@ def load_config(path: str | Path = "config.toml") -> MonitorConfig:
     vpn = data.get("vpn", {})
     events = data.get("events", {})
     telegram = data.get("telegram", {})
+    gemini = data.get("gemini", {})
     return MonitorConfig(
         interval_seconds=max(5, int(monitor.get("interval_seconds", 60))),
         log_level=str(monitor.get("log_level", "INFO")).upper(),
@@ -49,4 +53,7 @@ def load_config(path: str | Path = "config.toml") -> MonitorConfig:
         max_events_per_cycle=max(1, int(events.get("max_events_per_cycle", 100))),
         telegram_enabled=bool(telegram.get("enabled", False)),
         telegram_cooldown_seconds=max(0, int(telegram.get("cooldown_seconds", 300))),
+        gemini_enabled=bool(gemini.get("enabled", False)),
+        gemini_model=str(gemini.get("model", "gemini-2.5-pro")),
+        gemini_max_events_per_cycle=max(1, int(gemini.get("max_events_per_cycle", 10))),
     )
