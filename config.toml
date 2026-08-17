@@ -1,0 +1,12 @@
+[monitor]
+interval_seconds = 60
+log_level = "INFO"
+output_file = "/var/log/xfi-guard/monitor.jsonl"
+
+[thresholds]
+disk_warning_percent = 85
+memory_warning_percent = 90
+
+[vpn]
+services = ["xray", "x-ui", "3x-ui"]
+ports = [22, 80, 443, 2053, 2083, 2087, 2096]
