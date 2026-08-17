@@ -14,7 +14,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/log/xfi-guard
+ReadWritePaths=/var/log/xfi-guard /var/lib/xfi-guard
 
 [Install]
 WantedBy=multi-user.target
