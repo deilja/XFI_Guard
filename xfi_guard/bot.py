@@ -5,6 +5,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import subprocess
 from urllib import request
 
 from .ai import AIAnalyzer
@@ -23,7 +24,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
 TOKEN = os.getenv("XFI_GUARD_BOT_TOKEN")
@@ -134,6 +135,12 @@ def confirm_kb():
     return kb([["✅ Подтвердить блокировку"], ["❌ Отмена"]])
 
 
+def update_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬆️ Обновить XFI Guard", callback_data="xfi_update")],
+    ])
+
+
 def results(r):
     return "\n".join(
         f"{getattr(x, 'status', 'unknown').upper()}: {x.name} — {x.message}"
@@ -232,6 +239,19 @@ def fetch_gemini_models(key):
 def build_dispatcher():
     """Создать и вернуть Dispatcher. Никаких сетевых вызовов при импорте."""
     dp = Dispatcher(storage=MemoryStorage())
+
+    @dp.callback_query(F.data == "xfi_update")
+    async def update_callback(callback):
+        if not callback.from_user or callback.from_user.id not in ADMIN_IDS:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.answer("Обновление запущено")
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        subprocess.Popen(["systemctl", "start", "xfi-guard-update.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await callback.message.answer("⏳ Запущено безопасное обновление XFI Guard. Результат придёт отдельным сообщением.")
 
     @dp.message(Command("start"))
     async def start(m, state):
