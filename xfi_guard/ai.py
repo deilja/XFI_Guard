@@ -218,7 +218,9 @@ try:
         def _xfi_dispatcher_init(self, *args, **kwargs):
             _xfi_original_init(self, *args, **kwargs)
             from .ai_ui import install_ai_handlers
+            from .defense_ui import install_defense_handlers
             install_ai_handlers(self)
+            install_defense_handlers(self)
         _XfiDispatcher.__init__ = _xfi_dispatcher_init
         _XfiDispatcher._xfi_ai_patch = True
 except Exception:
