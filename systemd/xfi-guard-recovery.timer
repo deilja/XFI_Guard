@@ -1,0 +1,11 @@
+[Unit]
+Description=Check XFI Guard bot health every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=xfi-guard-recovery.service
+
+[Install]
+WantedBy=timers.target
