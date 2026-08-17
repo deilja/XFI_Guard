@@ -9,11 +9,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .ai import AIAnalyzer
 from .alerts import AlertManager
 from .checks import check_disk, check_memory
 from .config import MonitorConfig
 from .events import deduplicate, parse_file
-from .gemini import GeminiAnalyzer
 from .security import collect_security_checks
 from .state import StateStore
 from .vpn import check_listening_ports, check_service_candidates
@@ -22,10 +22,7 @@ LOG = logging.getLogger("xfi_guard.monitor")
 
 
 def collect_snapshot(config: MonitorConfig) -> list[dict]:
-    results = [
-        check_disk(warning_percent=config.disk_warning_percent),
-        check_memory(warning_percent=config.memory_warning_percent),
-    ]
+    results = [check_disk(warning_percent=config.disk_warning_percent), check_memory(warning_percent=config.memory_warning_percent)]
     results.extend(collect_security_checks())
     results.extend(check_service_candidates(config.vpn_services))
     results.append(check_listening_ports(config.vpn_ports))
@@ -57,7 +54,7 @@ def run_forever(config: MonitorConfig) -> None:
     running = True
     state = StateStore(config.state_file)
     alerts = AlertManager(cooldown=config.telegram_cooldown_seconds) if config.telegram_enabled else None
-    gemini = GeminiAnalyzer()
+    ai = AIAnalyzer(config.ai_provider)
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal running
@@ -65,23 +62,21 @@ def run_forever(config: MonitorConfig) -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    LOG.info("XFI Guard monitor started; interval=%ss", config.interval_seconds)
+    LOG.info("XFI Guard monitor started; AI provider=%s", config.ai_provider)
     while running:
         snapshot = collect_snapshot(config)
         events = collect_security_events(config, state)
-        if gemini.enabled():
-            for event in events[:config.gemini_max_events_per_cycle]:
-                analysis = gemini.analyze(event)
+        if ai.enabled():
+            for event in events[:config.ai_max_events_per_cycle]:
+                analysis = ai.analyze(event)
                 if analysis:
+                    event["ai_provider"] = ai.provider
                     event["ai_analysis"] = analysis
         write_snapshot(config.output_file, snapshot, events)
         if alerts:
             for event in events:
                 if alerts.send(event):
                     LOG.info("security alert sent: %s", event.get("event_type"))
-        if events:
-            LOG.warning("new security events: %d", len(events))
-        LOG.info("monitor snapshot written: %d checks", len(snapshot))
         for _ in range(config.interval_seconds):
             if not running:
                 break
