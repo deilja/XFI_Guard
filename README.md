@@ -6,16 +6,36 @@ Security and monitoring toolkit for VPS infrastructure.
 
 XFI Guard v1.0 is under active development.
 
+## Current implementation
+
+- Python package with versioned project metadata
+- read-only disk and memory health checks
+- availability checks for UFW, Fail2Ban and systemd tools
+- safe systemd service status check
+- JSON CLI output
+- initial unit tests
+
+Run locally:
+
+```bash
+python3 main.py
+```
+
+Or install the package and use:
+
+```bash
+xfi-guard
+```
+
 ## Planned modules
 
-- system health monitoring
 - security event collection
-- UFW and Fail2Ban status checks
 - SSH authentication monitoring
 - Xray / 3X-UI health checks
 - structured audit logging
 - Telegram notifications
 - optional AI-assisted incident analysis
+- alert thresholds and persistent state
 
 ## Design principles
 
