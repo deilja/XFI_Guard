@@ -4,6 +4,7 @@ import ipaddress, json, os
 from urllib import request, error
 from .gemini import GeminiAnalyzer
 from .ai_store import load
+from .attack_surface import collect_attack_surface
 
 class AIAnalyzer:
     def __init__(self, provider: str | None = None):
@@ -56,37 +57,87 @@ class AIAnalyzer:
             self.last_error = self.last_error or "Groq API вернул ответ без текста модели"; return None
 
     def recommend_block_ips(self, events: list[dict]) -> list[dict]:
-        """Return AI recommendations only; never changes the firewall."""
-        candidates, seen = [], set()
+        """Return AI recommendations from the full current attack surface.
+
+        The collector is read-only. The AI can recommend an IP, but firewall
+        changes still require the administrator's explicit confirmation button.
+        """
+        candidates_by_ip: dict[str, dict] = {}
         for event in events:
             ip = str(event.get("ip") or "").strip()
-            if not ip or ip in seen: continue
+            if not ip:
+                continue
             try:
                 parsed = ipaddress.ip_address(ip)
-                if parsed.version == 4 and parsed.is_global:
-                    candidates.append({"ip": ip, "severity": event.get("severity", "unknown"), "event_type": event.get("event_type", "unknown"), "message": event.get("message", "")}); seen.add(ip)
-            except ValueError: continue
-        if not candidates or not self.enabled(): return []
-        prompt = ("Ты аналитик безопасности XFI Guard. Оцени только перечисленные публичные IPv4. "
-                  "Выбери максимум 5 адресов, которые обоснованно рекомендуется заблокировать. "
-                  "Никогда не придумывай IP. Верни ТОЛЬКО JSON-объект с ключом recommendations, "
-                  "где значение — массив объектов {ip, reason, confidence}. Блокировка не выполняется автоматически.\n\n" + json.dumps(candidates, ensure_ascii=False))
+                if parsed.version != 4 or not parsed.is_global:
+                    continue
+                item = candidates_by_ip.setdefault(ip, {"ip": ip, "sources": [], "events": 0, "severity": "warning", "reason": ""})
+                item["events"] += 1
+                source = str(event.get("source") or event.get("event_type") or "events")
+                if source not in item["sources"]:
+                    item["sources"].append(source)
+                if event.get("severity") == "critical":
+                    item["severity"] = "critical"
+                if event.get("reason") or event.get("message"):
+                    item["reason"] = str(event.get("reason") or event.get("message"))[:300]
+            except ValueError:
+                continue
+
+        # Add current Fail2Ban + UFW + SSH state, not just the bot's recent log view.
+        try:
+            inventory = collect_attack_surface()
+            for item in inventory.get("ips", []):
+                ip = item.get("ip")
+                if not ip:
+                    continue
+                current = candidates_by_ip.setdefault(ip, {"ip": ip, "sources": [], "events": 0, "severity": "warning", "reason": ""})
+                for source in item.get("sources", []):
+                    if source not in current["sources"]:
+                        current["sources"].append(source)
+                current["events"] = max(current["events"], int(item.get("events", 0) or 0))
+                if item.get("severity") == "critical":
+                    current["severity"] = "critical"
+                if item.get("reason"):
+                    current["reason"] = str(item["reason"])[:300]
+        except Exception as exc:
+            self.last_error = f"Сбор картины атак: {type(exc).__name__}: {exc}"
+
+        candidates = list(candidates_by_ip.values())
+        if not candidates or not self.enabled():
+            return []
+        candidates.sort(key=lambda x: (x["severity"] != "critical", -len(x["sources"]), -x["events"]))
+        prompt = ("Ты аналитик безопасности XFI Guard. Проанализируй ПОЛНУЮ текущую картину атак VPS. "
+                  "Оцени только перечисленные публичные IPv4. Учитывай источники fail2ban, ufw и ssh, "
+                  "число событий и повторяемость. Выбери максимум 5 адресов, которые обоснованно рекомендуется "
+                  "заблокировать. Не рекомендуй уже заблокированный UFW адрес повторно. "
+                  "Никогда не придумывай IP. Для каждого укажи reason и risk: low, medium, high или critical. "
+                  "Верни ТОЛЬКО JSON-объект {recommendations:[{ip,reason,risk,confidence}]}. "
+                  "Блокировка не выполняется автоматически. Ответ должен быть на русском языке.\n\n" + json.dumps(candidates, ensure_ascii=False))
         try:
             if self.provider == "gemini":
-                result = self.gemini.analyze({"event_type": "block_recommendation", "message": prompt})
+                result = self.gemini.analyze({"event_type": "full_attack_surface_recommendation", "message": prompt})
             else:
-                body = {"model": self.groq_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 700, "response_format": {"type": "json_object"}}
+                body = {"model": self.groq_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 900, "response_format": {"type": "json_object"}}
                 payload, _ = self._groq_request("https://api.groq.com/openai/v1/chat/completions", body)
                 result = payload["choices"][0]["message"]["content"] if payload else None
             data = json.loads(result) if result else {}
             data = data.get("recommendations", []) if isinstance(data, dict) else []
-            allowed = {x["ip"] for x in candidates}; out = []
+            allowed = {x["ip"] for x in candidates}
+            blocked = set()
+            try:
+                from .firewall import list_blocked_ips
+                blocked = set(list_blocked_ips())
+            except Exception:
+                pass
+            out = []
             for item in data[:5]:
                 ip = str(item.get("ip", "")) if isinstance(item, dict) else ""
-                if ip in allowed:
+                if ip in allowed and ip not in blocked:
                     try: confidence = float(item.get("confidence", 0) or 0)
                     except (TypeError, ValueError): confidence = 0.0
-                    out.append({"ip": ip, "reason": str(item.get("reason", "Подозрительная активность")), "confidence": confidence})
+                    risk = str(item.get("risk", "medium")).lower()
+                    if risk not in {"low", "medium", "high", "critical"}: risk = "medium"
+                    out.append({"ip": ip, "reason": str(item.get("reason", "Подозрительная активность")), "risk": risk, "confidence": confidence})
             return out
         except Exception as exc:
             self.last_error = f"Рекомендации AI: {type(exc).__name__}: {exc}"; return []
