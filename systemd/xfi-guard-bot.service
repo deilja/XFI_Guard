@@ -12,11 +12,10 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.bot
 Restart=always
 RestartSec=5
-NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/xfi-guard
+ReadWritePaths=/var/lib/xfi-guard /etc/ufw
 
 [Install]
 WantedBy=multi-user.target
