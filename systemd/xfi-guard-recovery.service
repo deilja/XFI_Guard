@@ -1,0 +1,15 @@
+[Unit]
+Description=XFI Guard automatic bot recovery
+After=network-online.target xfi-guard-bot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/xfi-guard
+EnvironmentFile=-/etc/xfi-guard/bot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.recovery
+PrivateTmp=false
+ProtectSystem=off
+ProtectHome=false
