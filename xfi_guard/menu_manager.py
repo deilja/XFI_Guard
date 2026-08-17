@@ -1,8 +1,8 @@
 """Telegram UI manager.
 
 XFI Guard uses one message as the active menu. Menus are rendered as inline
-buttons, while the existing message handlers are kept compatible by bridging
-callback queries back into synthetic messages with the button text.
+buttons, while existing message handlers remain compatible through a callback
+bridge. Every submenu gets ◀️ Назад and 🏠 Главная navigation.
 """
 from __future__ import annotations
 
@@ -25,25 +25,65 @@ def _chat_key(chat_id: int | str, thread_id: int | None = None) -> str:
     return f"{chat_id}:{thread_id or 0}"
 
 
+def _is_main_menu(texts: list[str]) -> bool:
+    return "📊 Статус" in texts and "🚫 Блокировка IP" in texts
+
+
+def _back_target(texts: list[str]) -> str:
+    # AI model/key submenus return to the AI menu; security/IP submenus return
+    # to the main menu. This keeps the existing message handlers unchanged.
+    ai_markers = {
+        "🧠 Модель Gemini", "🧠 Модель Groq", "📋 Модели Gemini",
+        "📋 Модели Groq", "🔑 Ключ Gemini", "🔑 Ключ Groq",
+        "✏️ Своя модель Gemini", "✏️ Своя модель Groq",
+    }
+    return "⬅️ AI" if any(x in ai_markers for x in texts) else "⬅️ Главное меню"
+
+
 class InlineMenuMarkup(InlineKeyboardMarkup):
     """Compatibility replacement for ReplyKeyboardMarkup used by bot.py."""
 
     xfi_inline_menu = True
 
     def __init__(self, *, keyboard: list[list[Any]], **_: Any):
-        rows: list[list[InlineKeyboardButton]] = []
+        texts: list[str] = []
         for row in keyboard:
-            buttons: list[InlineKeyboardButton] = []
             for item in row:
-                text = getattr(item, "text", None) or str(item)
-                buttons.append(InlineKeyboardButton(text=text, callback_data=text[:64]))
+                texts.append(getattr(item, "text", None) or str(item))
+
+        # Remove the old navigation labels from the keyboard and replace them
+        # with the unified navigation row requested for XFI Guard.
+        cleaned = [
+            [getattr(item, "text", None) or str(item) for item in row]
+            for row in keyboard
+        ]
+        cleaned = [
+            [x for x in row if x not in {"⬅️ Главное меню", "⬅️ AI"}]
+            for row in cleaned
+        ]
+        cleaned = [row for row in cleaned if row]
+
+        if not _is_main_menu(texts):
+            cleaned.append(["◀️ Назад", "🏠 Главная"])
+
+        rows: list[list[InlineKeyboardButton]] = []
+        back_target = _back_target(texts)
+        for row in cleaned:
+            buttons: list[InlineKeyboardButton] = []
+            for text in row:
+                callback_data = text
+                if text == "◀️ Назад":
+                    callback_data = back_target
+                elif text == "🏠 Главная":
+                    callback_data = "⬅️ Главное меню"
+                buttons.append(InlineKeyboardButton(text=text, callback_data=callback_data[:64]))
             if buttons:
                 rows.append(buttons)
         super().__init__(inline_keyboard=rows)
 
 
 # __init__.py imports menu_manager before bot.py imports ReplyKeyboardMarkup.
-# Therefore existing kb() functions automatically create inline keyboards.
+# Existing kb() functions therefore produce inline keyboards automatically.
 import aiogram.types as _aiogram_types
 _aiogram_types.ReplyKeyboardMarkup = InlineMenuMarkup
 
