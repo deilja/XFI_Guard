@@ -7,7 +7,7 @@ import os
 import stat
 from pathlib import Path
 
-DEFAULT_MODEL = "gemini-2.5-pro"
+DEFAULT_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_PATH = "/var/lib/xfi-guard/gemini.json"
 
 
