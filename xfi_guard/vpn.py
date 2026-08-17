@@ -4,6 +4,27 @@ import re
 from typing import Any
 from .checks import CheckResult, _run
 
+XRAY_RE = re.compile(r"(?:^|[\s/])(xray|xray-linux(?:-amd64|-arm64|-arm)?)(?:$|[\s])", re.IGNORECASE)
+
+
+def _xray_processes() -> list[str]:
+    """Возвращает реальные процессы Xray, в том числе запущенные 3X-UI."""
+    code, stdout, _ = _run(["ps", "-eo", "pid=,comm=,args="])
+    if code != 0:
+        return []
+    matches: list[str] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # comm может быть xray, xray-linux-amd64 и т.п.; args может содержать полный путь.
+        parts = line.split(None, 2)
+        comm = parts[1] if len(parts) > 1 else ""
+        args = parts[2] if len(parts) > 2 else ""
+        if comm.lower() in {"xray", "xray-linux-amd64", "xray-linux-arm64", "xray-linux-arm"} or XRAY_RE.search(args):
+            matches.append(line)
+    return matches
+
 
 def _process_active(name: str) -> bool:
     code, stdout, _ = _run(["pgrep", "-x", name])
@@ -12,18 +33,14 @@ def _process_active(name: str) -> bool:
 
 def check_xray_runtime() -> CheckResult:
     """Проверяет реально запущенный Xray, включая Xray, запущенный 3X-UI."""
-    if _process_active("xray"):
-        code, stdout, _ = _run(["pgrep", "-a", "-x", "xray"])
-        return CheckResult("xray_runtime", "ok", "Xray реально запущен и работает как процесс", {"processes": stdout.splitlines() if code == 0 else []})
-
-    code, stdout, _ = _run(["ps", "-eo", "pid=,comm=,args="])
-    matches = []
-    if code == 0:
-        for line in stdout.splitlines():
-            if re.search(r"(?:^|/)xray(?:\s|$)", line, re.IGNORECASE):
-                matches.append(line.strip())
+    matches = _xray_processes()
     if matches:
-        return CheckResult("xray_runtime", "ok", "Xray реально запущен и найден среди процессов", {"processes": matches})
+        return CheckResult(
+            "xray_runtime",
+            "ok",
+            "Xray реально запущен и работает как процесс",
+            {"processes": matches},
+        )
     return CheckResult("xray_runtime", "critical", "Процесс Xray не запущен", {})
 
 
@@ -50,12 +67,19 @@ def check_service_candidates(services: tuple[str, ...] = ("xray", "x-ui", "3x-ui
         else:
             raw.append((service, "unknown", state or stderr.strip()))
 
-    xray_runtime = _process_active("xray")
+    xray_runtime = bool(_xray_processes())
+    panel_active = any(service in {"x-ui", "3x-ui"} and status == "ok" for service, status, _ in raw)
     results = []
     for service, status, output in raw:
         if service == "xray" and xray_runtime:
             status = "ok"
             message = "Xray работает (фактический процесс активен)"
+        elif service == "xray" and panel_active and status == "critical":
+            status = "warning"
+            message = "Отдельный systemd-сервис Xray неактивен, но панель 3X-UI/x-ui работает; проверяйте фактический процесс выше"
+        elif service == "3x-ui" and panel_active and status == "critical":
+            status = "warning"
+            message = "Сервис 3x-ui неактивен, но активна панель x-ui"
         elif status == "ok":
             message = f"Сервис {service} активен"
         elif status == "critical":
