@@ -117,6 +117,9 @@ class AIAnalyzer:
                 continue
             result = self._analyze_primary(provider, event)
             if result:
+                if self.last_provider != provider:
+                    self.last_provider = provider
+                    self.last_model = self.gemini.model if provider == "gemini" else self.groq_model
                 return result
             if self.last_error:
                 errors.append(self.last_error)
@@ -208,18 +211,14 @@ class AIAnalyzer:
             return []
 
 
-# Register the Telegram AI settings UI explicitly at Dispatcher construction.
-# This preserves the existing bot handlers while keeping AI UI isolated.
 try:
     from aiogram import Dispatcher as _XfiDispatcher
     if not getattr(_XfiDispatcher, "_xfi_ai_patch", False):
         _xfi_original_init = _XfiDispatcher.__init__
-
         def _xfi_dispatcher_init(self, *args, **kwargs):
             _xfi_original_init(self, *args, **kwargs)
             from .ai_ui import install_ai_handlers
             install_ai_handlers(self)
-
         _XfiDispatcher.__init__ = _xfi_dispatcher_init
         _XfiDispatcher._xfi_ai_patch = True
 except Exception:
