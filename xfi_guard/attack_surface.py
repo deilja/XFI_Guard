@@ -112,7 +112,11 @@ def _risk_for(entry: dict[str, Any]) -> tuple[int, str]:
 
 
 def collect_attack_surface() -> dict[str, Any]:
-    """Build active inventory; IPs currently blocked by UFW or Fail2Ban are excluded."""
+    """Build a complete inventory and mark blocked IPs instead of discarding them.
+
+    Consumers that need only actionable threats can filter ``blocked=True``.
+    Keeping blocked entries is important for audit, scoring and AI context.
+    """
     sources = {"fail2ban": collect_fail2ban(), "ufw": collect_ufw(), "ssh": collect_ssh()}
     blocked = _ufw_blocked()
     blocked.update(x["ip"] for x in sources["fail2ban"])
@@ -121,17 +125,23 @@ def collect_attack_surface() -> dict[str, Any]:
     for source, items in sources.items():
         for item in items:
             ip = item["ip"]
-            if ip in blocked:
-                continue
-            entry = grouped.setdefault(ip, {"ip": ip, "sources": [], "events": 0, "ssh_failed": 0, "fail2ban_banned": False, "ufw_blocked": False, "severity": "warning", "reasons": [], "jails": []})
+            entry = grouped.setdefault(ip, {
+                "ip": ip, "sources": [], "events": 0, "ssh_failed": 0,
+                "fail2ban_banned": False, "ufw_blocked": False,
+                "blocked": ip in blocked, "severity": "warning", "reasons": [], "jails": [],
+            })
             if source not in entry["sources"]:
                 entry["sources"].append(source)
             entry["events"] += 1
             if source == "ssh":
                 entry["ssh_failed"] += 1
+            if source == "fail2ban":
+                entry["fail2ban_banned"] = True
+            if source == "ufw":
+                entry["ufw_blocked"] = True
             if item.get("jail") and item["jail"] not in entry["jails"]:
                 entry["jails"].append(item["jail"])
-            if item["severity"] == "critical":
+            if item.get("severity") == "critical":
                 entry["severity"] = "critical"
             reason = str(item.get("reason", "")).strip()
             if reason and reason not in entry["reasons"]:
@@ -145,4 +155,13 @@ def collect_attack_surface() -> dict[str, Any]:
             entry["reason"] += f"; источники: {', '.join(entry['sources'])}"
 
     ips = sorted(grouped.values(), key=lambda x: (-x["risk_score"], -x["events"], x["ip"]))
-    return {"generated_from": ["fail2ban", "ufw", "ssh"], "blocked_count": len(blocked), "fail2ban_count": sum(1 for x in sources["fail2ban"] if x["ip"] not in blocked), "ufw_count": sum(1 for x in sources["ufw"] if x["ip"] not in blocked), "ssh_count": sum(1 for x in sources["ssh"] if x["ip"] not in blocked), "ips": ips}
+    active = [x for x in ips if not x["blocked"]]
+    return {
+        "generated_from": ["fail2ban", "ufw", "ssh"],
+        "blocked_count": len(blocked),
+        "active_count": len(active),
+        "fail2ban_count": sum(1 for x in sources["fail2ban"] if x["ip"] in blocked),
+        "ufw_count": sum(1 for x in sources["ufw"] if x["ip"] in blocked),
+        "ssh_count": len(sources["ssh"]),
+        "ips": ips,
+    }
