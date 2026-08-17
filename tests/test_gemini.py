@@ -1,4 +1,5 @@
 from xfi_guard.gemini import GeminiAnalyzer
+from xfi_guard.gemini_store import DEFAULT_MODEL
 
 
 def test_gemini_disabled_without_key(monkeypatch):
@@ -11,4 +12,4 @@ def test_gemini_disabled_without_key(monkeypatch):
 
 def test_gemini_model_default():
     analyzer = GeminiAnalyzer(api_key="test")
-    assert analyzer.model == "gemini-2.5-pro"
+    assert analyzer.model == DEFAULT_MODEL
