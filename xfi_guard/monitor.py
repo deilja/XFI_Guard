@@ -48,11 +48,7 @@ def collect_security_events(config: MonitorConfig, state: StateStore) -> list[di
 def write_snapshot(path: str, snapshot: list[dict], events: list[dict] | None = None) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "results": snapshot,
-        "events": events or [],
-    }
+    record = {"timestamp": datetime.now(timezone.utc).isoformat(), "results": snapshot, "events": events or []}
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -61,7 +57,7 @@ def run_forever(config: MonitorConfig) -> None:
     running = True
     state = StateStore(config.state_file)
     alerts = AlertManager(cooldown=config.telegram_cooldown_seconds) if config.telegram_enabled else None
-    gemini = GeminiAnalyzer(model=config.gemini_model) if config.gemini_enabled else None
+    gemini = GeminiAnalyzer()
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal running
@@ -73,7 +69,7 @@ def run_forever(config: MonitorConfig) -> None:
     while running:
         snapshot = collect_snapshot(config)
         events = collect_security_events(config, state)
-        if gemini and gemini.enabled():
+        if gemini.enabled():
             for event in events[:config.gemini_max_events_per_cycle]:
                 analysis = gemini.analyze(event)
                 if analysis:
