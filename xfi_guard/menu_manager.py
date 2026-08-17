@@ -106,6 +106,12 @@ async def _send_message_with_menu_cleanup(self: Bot, chat_id: int | str, text: s
 
 
 async def _callback_bridge(callback: CallbackQuery, dispatcher: Dispatcher) -> None:
+    """Turn an inline button press into a synthetic Message update.
+
+    The previous implementation registered this coroutine through a synchronous
+    lambda. aiogram then treated the lambda as a sync callback, producing
+    ``coroutine was never awaited`` and making buttons appear unresponsive.
+    """
     if not callback.message or not callback.data:
         await callback.answer()
         return
@@ -122,11 +128,21 @@ async def _callback_bridge(callback: CallbackQuery, dispatcher: Dispatcher) -> N
     await dispatcher.feed_update(bot, update)
 
 
+async def _register_callback_bridge(dispatcher: Dispatcher) -> None:
+    """Register the async callback handler exactly once for this dispatcher."""
+    marker = id(dispatcher)
+    if marker in _bridge_installed:
+        return
+
+    async def bridge_handler(callback: CallbackQuery) -> None:
+        await _callback_bridge(callback, dispatcher)
+
+    dispatcher.callback_query.register(bridge_handler)
+    _bridge_installed.add(marker)
+
+
 async def _start_polling_with_bridge(self: Dispatcher, *args: Any, **kwargs: Any):
-    marker = id(self)
-    if marker not in _bridge_installed:
-        self.callback_query.register(lambda q: _callback_bridge(q, self))
-        _bridge_installed.add(marker)
+    await _register_callback_bridge(self)
     return await _original_start_polling(self, *args, **kwargs)
 
 
