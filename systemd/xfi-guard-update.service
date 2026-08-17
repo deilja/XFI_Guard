@@ -1,0 +1,15 @@
+[Unit]
+Description=XFI Guard safe update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/xfi-guard
+EnvironmentFile=-/etc/xfi-guard/bot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.updater apply
+PrivateTmp=false
+ProtectSystem=off
+ProtectHome=false
