@@ -1,21 +1,37 @@
-"""Admin Telegram bot for XFI Guard configuration and control."""
+"""Admin Telegram bot with button-driven XFI Guard controls."""
 
 from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
+from .checks import collect_basic_checks
+from .config import load_config
+from .events import parse_file
+from .gemini import GeminiAnalyzer
 from .gemini_store import DEFAULT_PATH, DEFAULT_MODEL, load, save
+from .security import collect_security_checks
+from .vpn import collect_vpn_checks
 
 try:
     from aiogram import Bot, Dispatcher, F
     from aiogram.filters import Command
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.state import State, StatesGroup
+    from aiogram.fsm.storage.memory import MemoryStorage
     from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Install aiogram to run the XFI Guard bot") from exc
 
 TOKEN = os.getenv("XFI_GUARD_BOT_TOKEN")
 ADMIN_IDS = {int(value) for value in os.getenv("XFI_GUARD_ADMIN_IDS", "").split(",") if value.strip().isdigit()}
+CONFIG_PATH = os.getenv("XFI_GUARD_CONFIG", "config.toml")
+
+
+class SetupStates(StatesGroup):
+    waiting_key = State()
+    waiting_model = State()
 
 
 def is_admin(message: Message) -> bool:
@@ -35,10 +51,8 @@ def main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🛡 Fail2Ban"), KeyboardButton(text="🔥 UFW")],
             [KeyboardButton(text="🌐 VPN/Xray"), KeyboardButton(text="📋 События")],
             [KeyboardButton(text="🤖 Gemini"), KeyboardButton(text="⚙️ Настройки")],
-            [KeyboardButton(text="🔄 Проверка сейчас")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
+            [KeyboardButton(text="🔄 Проверка сейчас"), KeyboardButton(text="❓ Помощь")],
+        ], resize_keyboard=True, is_persistent=True,
     )
 
 
@@ -47,168 +61,214 @@ def gemini_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🔑 Установить Gemini API key")],
             [KeyboardButton(text="🧠 Выбрать модель"), KeyboardButton(text="ℹ️ Gemini status")],
-            [KeyboardButton(text="⬅️ Главное меню")],
-        ],
-        resize_keyboard=True,
+            [KeyboardButton(text="🧪 Тест Gemini"), KeyboardButton(text="⬅️ Главное меню")],
+        ], resize_keyboard=True,
     )
 
 
+def format_results(results: list) -> str:
+    lines = []
+    for item in results:
+        status = getattr(item, "status", "unknown").upper()
+        lines.append(f"{status}: {item.name} — {item.message}")
+    return "\n".join(lines)[:3800] or "Нет данных."
+
+
+def read_events(config_path: str) -> str:
+    config = load_config(config_path)
+    paths = [(config.ssh_log, "SSH"), (config.fail2ban_log, "Fail2Ban")]
+    found = []
+    for path, source in paths:
+        for event in parse_file(path, source.lower())[-10:]:
+            found.append(f"[{event.severity.upper()}] {source}: {event.message}")
+    return "\n".join(found)[-3800:] if found else "Новых распознанных событий в доступных журналах нет."
+
+
 def build_dispatcher() -> Dispatcher:
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
+
+    async def require_admin(message: Message) -> bool:
+        if not is_admin(message):
+            return False
+        return True
 
     async def show_menu(message: Message) -> None:
-        if is_admin(message):
+        if await require_admin(message):
             await message.answer("XFI Guard — панель управления", reply_markup=main_keyboard())
 
-    @dp.message(Command("start"))
-    async def start(message: Message) -> None:
-        await show_menu(message)
-
-    @dp.message(Command("help"))
-    async def help_command(message: Message) -> None:
-        if not is_admin(message):
-            return
-        await message.answer(
-            "Все основные функции доступны кнопками ниже.\n\n"
-            "Команды также поддерживаются:\n"
-            "/status\n/security\n/fail2ban\n/ufw\n/vpn\n/events\n/check\n"
-            "/gemini\n/gemini_key\n/gemini_model\n/gemini_status",
-            reply_markup=main_keyboard(),
-        )
-
-    @dp.message(Command("gemini"))
-    async def gemini_help(message: Message) -> None:
-        if not is_admin(message):
-            return
-        await message.answer(
-            "Gemini settings:\n"
-            "🔑 Установить API key — безопасный ввод с удалением сообщения\n"
-            "🧠 Выбрать модель — изменить модель\n"
-            "ℹ️ Gemini status — состояние Gemini\n"
-            f"Default model: {DEFAULT_MODEL}",
-            reply_markup=gemini_keyboard(),
-        )
-
-    @dp.message(Command("gemini_key"))
-    async def gemini_key(message: Message) -> None:
-        if not is_admin(message):
-            return
-        args = message.text.partition(" ")[2].strip() if message.text else ""
-        if args:
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            save(args, load().get("model", DEFAULT_MODEL))
-            await message.answer("Gemini API key сохранён в защищённом локальном хранилище.", reply_markup=gemini_keyboard())
-            return
-        await message.answer("Отправьте API key следующим сообщением. Сообщение с ключом будет удалено.")
-
-    @dp.message(Command("gemini_model"))
-    async def gemini_model(message: Message) -> None:
-        if not is_admin(message):
-            return
-        model = message.text.partition(" ")[2].strip() if message.text else ""
-        if not model:
-            await message.answer("Пример: /gemini_model gemini-2.5-pro")
-            return
-        current = load()
-        save(current.get("api_key", ""), model)
-        await message.answer(f"Gemini model установлен: {model}", reply_markup=gemini_keyboard())
-
-    @dp.message(Command("gemini_status"))
-    async def gemini_status(message: Message) -> None:
-        if not is_admin(message):
+    async def show_gemini(message: Message) -> None:
+        if not await require_admin(message):
             return
         current = load()
         key = current.get("api_key", "")
         await message.answer(
-            f"Gemini: {'ON' if key else 'OFF'}\nModel: {current.get('model', DEFAULT_MODEL)}\n"
-            f"Key: {mask_key(key) if key else 'not configured'}\nStore: {DEFAULT_PATH}",
+            f"Gemini: {'ON' if key else 'OFF'}\nМодель: {current.get('model', DEFAULT_MODEL)}\n"
+            f"Ключ: {mask_key(key) if key else 'не настроен'}",
             reply_markup=gemini_keyboard(),
         )
 
+    @dp.message(Command("start"))
+    async def start(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await show_menu(message)
+
+    @dp.message(Command("help"))
+    @dp.message(F.text == "❓ Помощь")
+    async def help_command(message: Message) -> None:
+        if await require_admin(message):
+            await message.answer(
+                "Команды полностью доступны кнопками.\n\n"
+                "/start /help /status /security /fail2ban /ufw /vpn /events /check\n"
+                "/gemini /gemini_key /gemini_model /gemini_status",
+                reply_markup=main_keyboard(),
+            )
+
+    @dp.message(Command("status"))
+    @dp.message(F.text == "📊 Статус")
+    async def status(message: Message) -> None:
+        if await require_admin(message):
+            results = collect_basic_checks() + collect_security_checks() + collect_vpn_checks()
+            await message.answer("📊 XFI Guard status\n\n" + format_results(results), reply_markup=main_keyboard())
+
+    @dp.message(Command("security"))
+    @dp.message(F.text == "🔐 Безопасность")
+    async def security(message: Message) -> None:
+        if await require_admin(message):
+            await message.answer("🔐 Security\n\n" + format_results(collect_security_checks()), reply_markup=main_keyboard())
+
+    @dp.message(Command("fail2ban"))
+    @dp.message(F.text == "🛡 Fail2Ban")
+    async def fail2ban(message: Message) -> None:
+        if await require_admin(message):
+            result = [x for x in collect_security_checks() if x.name == "fail2ban"]
+            await message.answer("🛡 Fail2Ban\n\n" + format_results(result), reply_markup=main_keyboard())
+
+    @dp.message(Command("ufw"))
+    @dp.message(F.text == "🔥 UFW")
+    async def ufw(message: Message) -> None:
+        if await require_admin(message):
+            result = [x for x in collect_security_checks() if x.name == "ufw"]
+            await message.answer("🔥 UFW\n\n" + format_results(result), reply_markup=main_keyboard())
+
+    @dp.message(Command("vpn"))
+    @dp.message(F.text == "🌐 VPN/Xray")
+    async def vpn(message: Message) -> None:
+        if await require_admin(message):
+            await message.answer("🌐 VPN/Xray\n\n" + format_results(collect_vpn_checks()), reply_markup=main_keyboard())
+
+    @dp.message(Command("events"))
+    @dp.message(F.text == "📋 События")
+    async def events(message: Message) -> None:
+        if await require_admin(message):
+            await message.answer("📋 Последние события\n\n" + read_events(CONFIG_PATH), reply_markup=main_keyboard())
+
+    @dp.message(Command("check"))
+    @dp.message(F.text == "🔄 Проверка сейчас")
+    async def check(message: Message) -> None:
+        if await require_admin(message):
+            results = collect_basic_checks() + collect_security_checks() + collect_vpn_checks()
+            await message.answer("🔄 Проверка завершена\n\n" + format_results(results), reply_markup=main_keyboard())
+
+    @dp.message(Command("gemini"))
     @dp.message(F.text == "🤖 Gemini")
-    async def button_gemini(message: Message) -> None:
-        await gemini_help(message)
+    async def gemini_help(message: Message) -> None:
+        await show_gemini(message)
+
+    @dp.message(Command("gemini_key"))
+    async def gemini_key_command(message: Message, state: FSMContext) -> None:
+        if not await require_admin(message):
+            return
+        args = message.text.partition(" ")[2].strip() if message.text else ""
+        if args:
+            save(args, load().get("model", DEFAULT_MODEL))
+            try: await message.delete()
+            except Exception: pass
+            await message.answer("Gemini API key сохранён.", reply_markup=gemini_keyboard())
+            return
+        await state.set_state(SetupStates.waiting_key)
+        await message.answer("Отправьте API key следующим сообщением. Сообщение будет удалено.", reply_markup=gemini_keyboard())
 
     @dp.message(F.text == "🔑 Установить Gemini API key")
-    async def button_gemini_key(message: Message) -> None:
-        if is_admin(message):
+    async def gemini_key_button(message: Message, state: FSMContext) -> None:
+        if await require_admin(message):
+            await state.set_state(SetupStates.waiting_key)
             await message.answer("Отправьте Gemini API key следующим сообщением. Оно будет удалено.")
 
+    @dp.message(SetupStates.waiting_key)
+    async def receive_gemini_key(message: Message, state: FSMContext) -> None:
+        if not await require_admin(message):
+            return
+        key = (message.text or "").strip()
+        if len(key) < 20:
+            await message.answer("Ключ выглядит слишком коротким. Отправьте корректный Gemini API key.")
+            return
+        save(key, load().get("model", DEFAULT_MODEL))
+        await state.clear()
+        try: await message.delete()
+        except Exception: pass
+        await message.answer("Gemini API key сохранён в защищённом локальном хранилище.", reply_markup=gemini_keyboard())
+
+    @dp.message(Command("gemini_model"))
+    async def gemini_model_command(message: Message, state: FSMContext) -> None:
+        if not await require_admin(message):
+            return
+        model = message.text.partition(" ")[2].strip() if message.text else ""
+        if model:
+            save(load().get("api_key", ""), model)
+            await message.answer(f"Модель Gemini установлена: {model}", reply_markup=gemini_keyboard())
+            return
+        await state.set_state(SetupStates.waiting_model)
+        await message.answer("Введите название модели, например: gemini-2.5-pro")
+
     @dp.message(F.text == "🧠 Выбрать модель")
-    async def button_gemini_model(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("Введите команду /gemini_model <название модели>\nНапример: /gemini_model gemini-2.5-pro")
+    async def gemini_model_button(message: Message, state: FSMContext) -> None:
+        if await require_admin(message):
+            await state.set_state(SetupStates.waiting_model)
+            await message.answer("Введите название модели, например: gemini-2.5-pro")
 
+    @dp.message(SetupStates.waiting_model)
+    async def receive_gemini_model(message: Message, state: FSMContext) -> None:
+        if not await require_admin(message):
+            return
+        model = (message.text or "").strip()
+        if not model or any(ch.isspace() for ch in model):
+            await message.answer("Некорректное имя модели. Пример: gemini-2.5-pro")
+            return
+        save(load().get("api_key", ""), model)
+        await state.clear()
+        await message.answer(f"Модель Gemini установлена: {model}", reply_markup=gemini_keyboard())
+
+    @dp.message(Command("gemini_status"))
     @dp.message(F.text == "ℹ️ Gemini status")
-    async def button_gemini_status(message: Message) -> None:
-        await gemini_status(message)
+    async def gemini_status(message: Message) -> None:
+        await show_gemini(message)
 
-    @dp.message(F.text == "⬅️ Главное меню")
-    async def back(message: Message) -> None:
-        await show_menu(message)
+    @dp.message(F.text == "🧪 Тест Gemini")
+    async def gemini_test(message: Message) -> None:
+        if not await require_admin(message):
+            return
+        analyzer = GeminiAnalyzer()
+        if not analyzer.enabled():
+            await message.answer("Gemini выключен: сначала задайте API key.", reply_markup=gemini_keyboard())
+            return
+        result = analyzer.analyze({"event_type": "manual_test", "severity": "warning", "message": "XFI Guard Telegram Gemini connectivity test"})
+        await message.answer("🧪 Gemini test\n\n" + (result or "Gemini API не вернул результат."), reply_markup=gemini_keyboard())
 
     @dp.message(F.text == "⚙️ Настройки")
     async def settings(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("Настройки XFI Guard управляются через конфигурацию и защищённые секреты.", reply_markup=main_keyboard())
+        if await require_admin(message):
+            config = load_config(CONFIG_PATH)
+            await message.answer(
+                f"⚙️ Настройки\nИнтервал: {config.interval_seconds}s\n"
+                f"Telegram alerts: {'ON' if config.telegram_enabled else 'OFF'}\n"
+                f"Gemini: {'ON' if config.gemini_enabled else 'OFF'}\nModel: {config.gemini_model}",
+                reply_markup=main_keyboard(),
+            )
 
-    @dp.message(F.text == "📊 Статус")
-    @dp.message(Command("status"))
-    async def status(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("Для полного системного статуса используйте /check.", reply_markup=main_keyboard())
-
-    @dp.message(F.text == "🔐 Безопасность")
-    @dp.message(Command("security"))
-    async def security(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("Security monitor: SSH / UFW / Fail2Ban", reply_markup=main_keyboard())
-
-    @dp.message(F.text == "🛡 Fail2Ban")
-    @dp.message(Command("fail2ban"))
-    async def fail2ban(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("Fail2Ban monitor активен.", reply_markup=main_keyboard())
-
-    @dp.message(F.text == "🔥 UFW")
-    @dp.message(Command("ufw"))
-    async def ufw(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("UFW monitor активен.", reply_markup=main_keyboard())
-
-    @dp.message(F.text == "🌐 VPN/Xray")
-    @dp.message(Command("vpn"))
-    async def vpn(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("VPN/Xray monitor активен.", reply_markup=main_keyboard())
-
-    @dp.message(F.text == "📋 События")
-    @dp.message(Command("events"))
-    async def events(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("События SSH/Fail2Ban записываются в monitor.jsonl.", reply_markup=main_keyboard())
-
-    @dp.message(F.text == "🔄 Проверка сейчас")
-    @dp.message(Command("check"))
-    async def check(message: Message) -> None:
-        if is_admin(message):
-            await message.answer("Запущена проверка XFI Guard. Результат будет записан монитором.", reply_markup=main_keyboard())
-
-    @dp.message(F.text)
-    async def secret_message(message: Message) -> None:
-        if not is_admin(message):
-            return
-        if message.text and message.text.startswith("AIza"):
-            current = load()
-            save(message.text.strip(), current.get("model", DEFAULT_MODEL))
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            await message.answer("Gemini API key сохранён. Ключ не отображается в ответе.", reply_markup=gemini_keyboard())
+    @dp.message(F.text == "⬅️ Главное меню")
+    async def back(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await show_menu(message)
 
     return dp
 
