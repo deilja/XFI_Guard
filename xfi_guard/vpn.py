@@ -17,7 +17,6 @@ def _xray_processes() -> list[str]:
         line = line.strip()
         if not line:
             continue
-        # comm может быть xray, xray-linux-amd64 и т.п.; args может содержать полный путь.
         parts = line.split(None, 2)
         comm = parts[1] if len(parts) > 1 else ""
         args = parts[2] if len(parts) > 2 else ""
@@ -32,15 +31,9 @@ def _process_active(name: str) -> bool:
 
 
 def check_xray_runtime() -> CheckResult:
-    """Проверяет реально запущенный Xray, включая Xray, запущенный 3X-UI."""
     matches = _xray_processes()
     if matches:
-        return CheckResult(
-            "xray_runtime",
-            "ok",
-            "Xray реально запущен и работает как процесс",
-            {"processes": matches},
-        )
+        return CheckResult("xray_runtime", "ok", "Xray реально запущен и работает как процесс", {"processes": matches})
     return CheckResult("xray_runtime", "critical", "Процесс Xray не запущен", {})
 
 
@@ -99,7 +92,9 @@ def check_listening_ports(ports: tuple[int, ...] = (22, 80, 443, 2053, 2083, 208
         fields = line.split()
         if len(fields) < 5:
             continue
-        local = fields[4]
+        # Формат ss -lntup: State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+        # Local Address находится в fields[3], а не fields[4].
+        local = fields[3]
         port_text = local.rsplit(":", 1)[-1].strip("[]")
         if port_text.isdigit() and int(port_text) in ports:
             match = re.search(r'users:\(\("([^"]+)"', line)
