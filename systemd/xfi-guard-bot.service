@@ -15,7 +15,9 @@ RestartSec=5
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/xfi-guard /etc/ufw
+# UFW needs to update its persistent rules and runtime state when an
+# administrator confirms an IP block/unblock from the Telegram bot.
+ReadWritePaths=/var/lib/xfi-guard /etc/ufw /lib/ufw /var/lib/ufw /run/ufw
 
 [Install]
 WantedBy=multi-user.target
