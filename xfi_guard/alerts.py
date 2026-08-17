@@ -39,6 +39,10 @@ class AlertManager:
             f"User: {event.get('user') or '-'}\\n"
             f"{event.get('message', '')}"
         )
+        analysis = event.get("ai_analysis")
+        if analysis:
+            text += f"\\n\\n🤖 Gemini analysis:\\n{analysis}"
+        text = text[:3900]
         payload = json.dumps({"chat_id": self.chat_id, "text": text}).encode()
         req = request.Request(
             f"https://api.telegram.org/bot{self.token}/sendMessage",
