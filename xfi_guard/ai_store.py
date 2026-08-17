@@ -1,7 +1,4 @@
-"""Local encrypted-at-rest-ready storage for AI provider settings.
-
-The store intentionally keeps API keys outside Git. File permissions are restricted to the owner.
-"""
+"""Local encrypted-at-rest-ready storage for AI provider settings."""
 
 from __future__ import annotations
 
@@ -10,7 +7,8 @@ import os
 from pathlib import Path
 
 DEFAULT_PATH = "/var/lib/xfi-guard/ai.json"
-DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
+# Stable production model; the Telegram UI can query the current API list.
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 
 
