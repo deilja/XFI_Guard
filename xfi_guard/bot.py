@@ -1,4 +1,4 @@
-"""Telegram admin bot for XFI Guard. All user-facing messages are in Russian."""
+"""Telegram admin bot for XFI Guard. Интерфейс бота на русском языке."""
 from __future__ import annotations
 import asyncio, os
 from .ai import AIAnalyzer
@@ -34,11 +34,15 @@ def build_dispatcher():
     async def start(m,state):
         await state.clear()
         if admin(m): await m.answer("🛡 XFI Guard\n\nПанель управления сервером. Выберите нужную функцию:",reply_markup=main_kb())
-    @dp.message(Command("status"));
-    async def _dummy(m): pass
+    @dp.message(Command("status"))
+    async def status_command(m):
+        if admin(m): await m.answer("📊 Статус XFI Guard\n\n"+results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()),reply_markup=main_kb())
     @dp.message(F.text=="📊 Статус")
     async def status(m):
         if admin(m): await m.answer("📊 Статус XFI Guard\n\n"+results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()),reply_markup=main_kb())
+    @dp.message(Command("security"))
+    async def security_command(m):
+        if admin(m): await m.answer("🔐 Безопасность\n\n"+results(collect_security_checks()),reply_markup=main_kb())
     @dp.message(F.text=="🔐 Безопасность")
     async def security(m):
         if admin(m): await m.answer("🔐 Безопасность\n\n"+results(collect_security_checks()),reply_markup=main_kb())
@@ -81,6 +85,7 @@ def build_dispatcher():
         p="gemini" if m.text=="🟢 Gemini" else "groq"; c=load_ai(); c['provider']=p; save_ai(c); await m.answer(f"✅ Активный AI: {p.upper()}",reply_markup=ai_kb())
     @dp.message(SetupStates.provider)
     async def provider_text(m,state):
+        if not admin(m): return
         p=(m.text or '').strip().lower()
         if p not in {'gemini','groq'}: await m.answer("Введите только: gemini или groq"); return
         c=load_ai(); c['provider']=p; save_ai(c); await state.clear(); await m.answer(f"✅ Активный AI: {p.upper()}",reply_markup=ai_kb())
