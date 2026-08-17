@@ -107,16 +107,16 @@ def _risk_for(entry: dict[str, Any]) -> tuple[int, str]:
         score += 10
     if len(entry["sources"]) >= 3:
         score += 5
+    if entry.get("fail2ban_banned"):
+        score = max(score, 95)
+    elif entry.get("ufw_blocked"):
+        score = max(score, 90)
     score = min(score, 100)
     return score, ("КРИТИЧЕСКИЙ" if score >= 85 else "ВЫСОКИЙ" if score >= 60 else "СРЕДНИЙ" if score >= 25 else "НИЗКИЙ")
 
 
 def collect_attack_surface() -> dict[str, Any]:
-    """Build a complete inventory and mark blocked IPs instead of discarding them.
-
-    Consumers that need only actionable threats can filter ``blocked=True``.
-    Keeping blocked entries is important for audit, scoring and AI context.
-    """
+    """Build a complete inventory and mark blocked IPs instead of discarding them."""
     sources = {"fail2ban": collect_fail2ban(), "ufw": collect_ufw(), "ssh": collect_ssh()}
     blocked = _ufw_blocked()
     blocked.update(x["ip"] for x in sources["fail2ban"])
