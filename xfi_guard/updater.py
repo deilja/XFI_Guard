@@ -18,6 +18,7 @@ REPO = Path("/opt/xfi-guard")
 SERVICE = "xfi-guard-bot"
 GITHUB_API = "https://api.github.com/repos/deilja/XFI_Guard/commits/main"
 LOCK_FILE = Path("/run/xfi-guard-update.lock")
+NOTIFIED_FILE = Path("/var/lib/xfi-guard/update-notified")
 
 
 def run(*args: str, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -74,6 +75,25 @@ def release_lock() -> None:
         pass
 
 
+def read_notified() -> str:
+    try:
+        return NOTIFIED_FILE.read_text().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def write_notified(value: str) -> None:
+    NOTIFIED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    NOTIFIED_FILE.write_text(value + "\n")
+
+
+def clear_notified() -> None:
+    try:
+        NOTIFIED_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def bot_healthy(wait: int = 20) -> bool:
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -108,14 +128,19 @@ def check_update() -> int:
         current = local_head()
         remote = github_head()
         if current == remote:
+            clear_notified()
             return 0
-        notify(
+        if read_notified() == remote:
+            return 0
+        sent = notify(
             "🆕 Доступно обновление XFI Guard\n\n"
             f"Текущая версия: {current[:8]}\n"
             f"Новая версия: {remote[:8]}\n\n"
             "Обновление выполнится только после подтверждения.",
             [[{"text": "⬆️ Обновить XFI Guard", "callback_data": "xfi_update"}]],
         )
+        if sent:
+            write_notified(remote)
         print(f"Update available: {current} -> {remote}")
         return 0
     except Exception as exc:
@@ -136,6 +161,7 @@ def apply_update() -> int:
         run("git", "fetch", "origin", "main", timeout=120)
         remote = run("git", "rev-parse", "origin/main").stdout.strip()
         if old == remote:
+            clear_notified()
             notify("ℹ️ Обновление уже не требуется. Сервер работает на актуальной версии.")
             return 0
 
@@ -150,6 +176,7 @@ def apply_update() -> int:
         subprocess.run(["systemctl", "restart", SERVICE], check=True, timeout=60)
 
         if bot_healthy():
+            clear_notified()
             notify(
                 "✅ XFI Guard успешно обновлён\n\n"
                 f"Было: {old[:8]}\n"
@@ -166,6 +193,7 @@ def apply_update() -> int:
                 subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30)
                 subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60)
                 rollback_ok = bot_healthy()
+                clear_notified()
             except Exception:
                 rollback_ok = False
         notify(
