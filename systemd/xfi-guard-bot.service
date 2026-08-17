@@ -12,10 +12,12 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.bot
 Restart=always
 RestartSec=5
-PrivateTmp=true
+# The bot performs administrator-approved UFW changes.
+# Do not sandbox filesystem access because UFW must write /etc/ufw/user.rules.
+PrivateTmp=false
 ProtectSystem=off
-ProtectHome=true
-ReadWritePaths=/var/lib/xfi-guard /etc/ufw /lib/ufw /var/lib/ufw /run/ufw
+ProtectHome=false
+ReadWritePaths=/etc/ufw /lib/ufw /var/lib/ufw /run/ufw /var/lib/xfi-guard
 
 [Install]
 WantedBy=multi-user.target
