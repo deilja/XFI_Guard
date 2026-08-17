@@ -43,7 +43,8 @@ class AIAnalyzer:
         if self.provider == "gemini":
             try:
                 result = self.gemini.analyze(event)
-                if result is None: self.last_error = "Gemini не вернул ответ или ключ/модель недействительны"
+                if result is None:
+                    self.last_error = self.gemini.last_error or "Gemini не вернул ответ"
                 return result
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: {exc}"; return None
@@ -57,11 +58,7 @@ class AIAnalyzer:
             self.last_error = self.last_error or "Groq API вернул ответ без текста модели"; return None
 
     def recommend_block_ips(self, events: list[dict]) -> list[dict]:
-        """Return AI recommendations from the full current attack surface.
-
-        The collector is read-only. The AI can recommend an IP, but firewall
-        changes still require the administrator's explicit confirmation button.
-        """
+        """Return AI recommendations from the full current attack surface."""
         candidates_by_ip: dict[str, dict] = {}
         for event in events:
             ip = str(event.get("ip") or "").strip()
@@ -74,48 +71,32 @@ class AIAnalyzer:
                 item = candidates_by_ip.setdefault(ip, {"ip": ip, "sources": [], "events": 0, "severity": "warning", "reason": ""})
                 item["events"] += 1
                 source = str(event.get("source") or event.get("event_type") or "events")
-                if source not in item["sources"]:
-                    item["sources"].append(source)
-                if event.get("severity") == "critical":
-                    item["severity"] = "critical"
-                if event.get("reason") or event.get("message"):
-                    item["reason"] = str(event.get("reason") or event.get("message"))[:300]
+                if source not in item["sources"]: item["sources"].append(source)
+                if event.get("severity") == "critical": item["severity"] = "critical"
+                if event.get("reason") or event.get("message"): item["reason"] = str(event.get("reason") or event.get("message"))[:300]
             except ValueError:
                 continue
-
-        # Add current Fail2Ban + UFW + SSH state, not just the bot's recent log view.
         try:
             inventory = collect_attack_surface()
             for item in inventory.get("ips", []):
                 ip = item.get("ip")
-                if not ip:
-                    continue
+                if not ip: continue
                 current = candidates_by_ip.setdefault(ip, {"ip": ip, "sources": [], "events": 0, "severity": "warning", "reason": ""})
                 for source in item.get("sources", []):
-                    if source not in current["sources"]:
-                        current["sources"].append(source)
+                    if source not in current["sources"]: current["sources"].append(source)
                 current["events"] = max(current["events"], int(item.get("events", 0) or 0))
-                if item.get("severity") == "critical":
-                    current["severity"] = "critical"
-                if item.get("reason"):
-                    current["reason"] = str(item["reason"])[:300]
+                if item.get("severity") == "critical": current["severity"] = "critical"
+                if item.get("reason"): current["reason"] = str(item["reason"])[:300]
         except Exception as exc:
             self.last_error = f"Сбор картины атак: {type(exc).__name__}: {exc}"
-
         candidates = list(candidates_by_ip.values())
-        if not candidates or not self.enabled():
-            return []
+        if not candidates or not self.enabled(): return []
         candidates.sort(key=lambda x: (x["severity"] != "critical", -len(x["sources"]), -x["events"]))
-        prompt = ("Ты аналитик безопасности XFI Guard. Проанализируй ПОЛНУЮ текущую картину атак VPS. "
-                  "Оцени только перечисленные публичные IPv4. Учитывай источники fail2ban, ufw и ssh, "
-                  "число событий и повторяемость. Выбери максимум 5 адресов, которые обоснованно рекомендуется "
-                  "заблокировать. Не рекомендуй уже заблокированный UFW адрес повторно. "
-                  "Никогда не придумывай IP. Для каждого укажи reason и risk: low, medium, high или critical. "
-                  "Верни ТОЛЬКО JSON-объект {recommendations:[{ip,reason,risk,confidence}]}. "
-                  "Блокировка не выполняется автоматически. Ответ должен быть на русском языке.\n\n" + json.dumps(candidates, ensure_ascii=False))
+        prompt = ("Ты аналитик безопасности XFI Guard. Проанализируй ПОЛНУЮ текущую картину атак VPS. Учитывай источники fail2ban, ufw и ssh, число событий и повторяемость. Выбери максимум 5 адресов, которые обоснованно рекомендуется заблокировать. Не рекомендуй уже заблокированный UFW адрес повторно. Никогда не придумывай IP. Для каждого укажи reason и risk: low, medium, high или critical. Верни ТОЛЬКО JSON-объект {recommendations:[{ip,reason,risk,confidence}]}. Блокировка не выполняется автоматически. Ответ должен быть на русском языке.\n\n" + json.dumps(candidates, ensure_ascii=False))
         try:
             if self.provider == "gemini":
                 result = self.gemini.analyze({"event_type": "full_attack_surface_recommendation", "message": prompt})
+                if result is None: self.last_error = self.gemini.last_error or self.last_error
             else:
                 body = {"model": self.groq_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": 900, "response_format": {"type": "json_object"}}
                 payload, _ = self._groq_request("https://api.groq.com/openai/v1/chat/completions", body)
@@ -127,8 +108,7 @@ class AIAnalyzer:
             try:
                 from .firewall import list_blocked_ips
                 blocked = set(list_blocked_ips())
-            except Exception:
-                pass
+            except Exception: pass
             out = []
             for item in data[:5]:
                 ip = str(item.get("ip", "")) if isinstance(item, dict) else ""
