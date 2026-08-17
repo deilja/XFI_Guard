@@ -1,6 +1,7 @@
 """Telegram admin bot for XFI Guard. Интерфейс бота на русском языке."""
 from __future__ import annotations
-import asyncio, os
+import asyncio, json, os
+from urllib import request
 from .ai import AIAnalyzer
 from .ai_store import load as load_ai, save as save_ai
 from .checks import collect_basic_checks
@@ -16,18 +17,40 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 TOKEN=os.getenv("XFI_GUARD_BOT_TOKEN")
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
+GROQ_MODELS = [
+    ("🧠 GPT-OSS 120B", "openai/gpt-oss-120b"),
+    ("🧠 GPT-OSS 20B", "openai/gpt-oss-20b"),
+    ("🦙 Llama 3.3 70B", "llama-3.3-70b-versatile"),
+    ("⚡ Llama 3.1 8B", "llama-3.1-8b-instant"),
+    ("🌐 Groq Compound", "groq/compound"),
+    ("🚀 Groq Compound Mini", "groq/compound-mini"),
+]
 class SetupStates(StatesGroup):
     provider=State(); gemini_key=State(); groq_key=State(); gemini_model=State(); groq_model=State()
 def admin(m): return bool(m.from_user and m.from_user.id in ADMIN_IDS)
 def mask(k): return k[:4]+"…"+k[-4:] if len(k)>=8 else ("настроен" if k else "не настроен")
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
 def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["🤖 AI","🧠 Центр AI"],["🔄 Проверить сейчас","❓ Помощь"]])
-def ai_kb(): return kb([["🟢 Gemini","🔵 Groq"],["🔀 Выбрать AI"],["🔑 Ключ Gemini","🔑 Ключ Groq"],["🧠 Модель Gemini","🧠 Модель Groq"],["🧪 Проверить AI","ℹ️ Статус AI"],["⬅️ Главное меню"]])
+def ai_kb(): return kb([["🟢 Gemini","🔵 Groq"],["🔀 Выбрать AI"],["🔑 Ключ Gemini","🔑 Ключ Groq"],["🧠 Модель Gemini","🧠 Модель Groq"],["📋 Модели Groq","✏️ Своя модель Groq"],["🧪 Проверить AI","ℹ️ Статус AI"],["⬅️ Главное меню"]])
+def groq_models_kb():
+    rows=[]
+    for i in range(0,len(GROQ_MODELS),2): rows.append([x[0] for x in GROQ_MODELS[i:i+2]])
+    rows += [["🔄 Получить модели Groq API"],["✏️ Своя модель Groq"],["⬅️ AI"]]
+    return kb(rows)
 def center_kb(): return kb([["📊 Анализ за 24 часа"],["🚨 Топ атакующих IP"],["🤖 AI-анализ сводки"],["🔄 Обновить"],["⬅️ Главное меню"]])
 def results(r): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {x.name} — {x.message}" for x in r)[:3800] or "Нет данных."
 def events():
     from .config import load_config
     c=load_config(); return parse_file(c.ssh_log,"ssh")+parse_file(c.fail2ban_log,"fail2ban")
+def fetch_groq_models(key: str) -> list[str]:
+    req=request.Request("https://api.groq.com/openai/v1/models",headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"})
+    with request.urlopen(req,timeout=15) as response: data=json.loads(response.read().decode())
+    ids=[]
+    for item in data.get("data",[]):
+        mid=str(item.get("id","")).strip()
+        if mid and not mid.startswith("whisper") and "guard" not in mid.lower() and mid not in {"distil-whisper-large-v3-en"}:
+            ids.append(mid)
+    return sorted(set(ids))
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage())
     @dp.message(Command("start"))
@@ -112,16 +135,47 @@ def build_dispatcher():
         if admin(m): await state.set_state(SetupStates.gemini_model); await m.answer("Введите название модели Gemini:")
     @dp.message(F.text=="🧠 Модель Groq")
     async def gr(m,state):
-        if admin(m): await state.set_state(SetupStates.groq_model); await m.answer("Введите название модели Groq:")
+        if admin(m): await m.answer("Выберите модель Groq:",reply_markup=groq_models_kb())
+    @dp.message(F.text.in_({x[0] for x in GROQ_MODELS}))
+    async def groq_model_button(m):
+        if not admin(m): return
+        model=next(v for k,v in GROQ_MODELS if k==m.text)
+        c=load_ai(); c['groq_model']=model; save_ai(c)
+        await m.answer(f"✅ Модель Groq выбрана:\n{model}",reply_markup=ai_kb())
+    @dp.message(F.text=="🔄 Получить модели Groq API")
+    async def groq_api_models(m):
+        if not admin(m): return
+        c=load_ai(); key=c.get('groq_key') or os.getenv('GROQ_API_KEY') or os.getenv('XFI_GUARD_GROQ_API_KEY')
+        if not key:
+            await m.answer("❌ Сначала добавьте API-ключ Groq через кнопку «🔑 Ключ Groq».",reply_markup=groq_models_kb()); return
+        try:
+            models=fetch_groq_models(key)
+        except Exception as exc:
+            await m.answer(f"❌ Не удалось получить список моделей Groq API.\nПроверьте API-ключ и соединение.\n\nОшибка: {type(exc).__name__}",reply_markup=groq_models_kb()); return
+        if not models:
+            await m.answer("❌ Groq API не вернул доступных текстовых моделей.",reply_markup=groq_models_kb()); return
+        rows=[]
+        for i in range(0,min(len(models),30),2): rows.append([f"🔹 {x}" for x in models[i:i+2]])
+        rows += [["⬅️ AI"]]
+        await m.answer("📋 Доступные модели Groq API:\n\nВыберите модель кнопкой. Показаны первые 30 доступных текстовых моделей.",reply_markup=kb(rows))
+    @dp.message(F.text.startswith("🔹 "))
+    async def groq_api_model_button(m):
+        if not admin(m): return
+        model=m.text[2:].strip()
+        if not model: return
+        c=load_ai(); c['groq_model']=model; save_ai(c); await m.answer(f"✅ Модель Groq выбрана:\n{model}",reply_markup=ai_kb())
+    @dp.message(F.text=="✏️ Своя модель Groq")
+    async def custom_groq_model(m,state):
+        if admin(m): await state.set_state(SetupStates.groq_model); await m.answer("Введите точный ID модели Groq, например:\nopenai/gpt-oss-120b")
+    @dp.message(SetupStates.groq_model)
+    async def sgr(m,state): await savemodel(m,state,'groq')
     async def savemodel(m,state,p):
         if not admin(m): return
         model=(m.text or '').strip()
         if not model or any(ch.isspace() for ch in model): await m.answer("❌ Некорректное название модели."); return
-        c=load_ai(); c['gemini_model' if p=='gemini' else 'groq_model']=model; save_ai(c); await state.clear(); await m.answer(f"✅ Модель {p.upper()} изменена: {model}",reply_markup=ai_kb())
+        c=load_ai(); c['groq_model' if p=='groq' else 'gemini_model']=model; save_ai(c); await state.clear(); await m.answer(f"✅ Модель {p.upper()} изменена: {model}",reply_markup=ai_kb())
     @dp.message(SetupStates.gemini_model)
     async def sgm(m,state): await savemodel(m,state,'gemini')
-    @dp.message(SetupStates.groq_model)
-    async def sgr(m,state): await savemodel(m,state,'groq')
     @dp.message(F.text=="🧪 Проверить AI")
     async def test(m):
         if admin(m):
@@ -130,12 +184,14 @@ def build_dispatcher():
     @dp.message(F.text=="ℹ️ Статус AI")
     async def aist(m):
         if admin(m):
-            c=load_ai(); await m.answer(f"ℹ️ Статус AI\n\nПровайдер: {c.get('provider','gemini').upper()}\nGemini: {mask(c.get('gemini_key',''))}\nGroq: {mask(c.get('groq_key',''))}",reply_markup=ai_kb())
+            c=load_ai(); await m.answer(f"ℹ️ Статус AI\n\nПровайдер: {c.get('provider','gemini').upper()}\nGemini: {mask(c.get('gemini_key',''))}\nGroq: {mask(c.get('groq_key',''))}\nМодель Groq: {c.get('groq_model','llama-3.3-70b-versatile')}",reply_markup=ai_kb())
+    @dp.message(F.text=="⬅️ AI")
+    async def back_ai(m,state): await state.clear(); await m.answer("🤖 Центр AI",reply_markup=ai_kb())
     @dp.message(F.text=="⬅️ Главное меню")
     async def back(m,state): await state.clear(); await m.answer("🛡 XFI Guard — главное меню",reply_markup=main_kb())
     @dp.message(F.text=="❓ Помощь")
     async def help(m):
-        if admin(m): await m.answer("❓ Все функции XFI Guard доступны через кнопки.\n\nAI можно переключать между Gemini и Groq, задавать API-ключи и модели.",reply_markup=main_kb())
+        if admin(m): await m.answer("❓ Все функции XFI Guard доступны через кнопки.\n\nAI можно переключать между Gemini и Groq, задавать API-ключи и модели. Для Groq доступен список моделей из API.",reply_markup=main_kb())
     return dp
 async def main():
     if not TOKEN or not ADMIN_IDS: raise RuntimeError("Не заданы XFI_GUARD_BOT_TOKEN и XFI_GUARD_ADMIN_IDS")
