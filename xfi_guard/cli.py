@@ -7,23 +7,19 @@ import json
 
 from .checks import collect_basic_checks
 from .security import collect_security_checks
+from .vpn import collect_vpn_checks
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="xfi-guard")
-    parser.add_argument(
-        "--scope",
-        choices=("basic", "security", "all"),
-        default="all",
-        help="Checks to execute",
-    )
+    parser.add_argument("--scope", choices=("basic", "security", "vpn", "all"), default="all", help="Checks to execute")
     args = parser.parse_args()
-
     results = []
     if args.scope in {"basic", "all"}:
         results.extend(collect_basic_checks())
     if args.scope in {"security", "all"}:
         results.extend(collect_security_checks())
-
+    if args.scope in {"vpn", "all"}:
+        results.extend(collect_vpn_checks())
     print(json.dumps([item.to_dict() for item in results], ensure_ascii=False, indent=2))
     return 0
