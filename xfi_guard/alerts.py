@@ -23,8 +23,13 @@ class AlertManager:
             return False
         fingerprint = str(event.get("fingerprint", ""))
         now = time.monotonic()
-        last = self._last_sent.get(fingerprint, 0)
-        if now - last < self.cooldown:
+        # Первый alert для fingerprint всегда разрешён. Раньше значение 0
+        # сравнивалось с monotonic() напрямую, из-за чего при uptime > cooldown
+        # первый alert ошибочно подавлялся.
+        if fingerprint not in self._last_sent:
+            self._last_sent[fingerprint] = now
+            return True
+        if now - self._last_sent[fingerprint] < self.cooldown:
             return False
         self._last_sent[fingerprint] = now
         return True
