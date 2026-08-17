@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xfi-guard"
-version = "0.1.2"
+version = "0.1.3"
 description = "Security and monitoring toolkit for VPS infrastructure"
 requires-python = ">=3.10"
 dependencies = [
-    "aiogram>=3.20,<4",
+    "aiogram>=3.22,<4",
 ]
 
 [tool.setuptools.packages.find]
