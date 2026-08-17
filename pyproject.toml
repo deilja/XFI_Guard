@@ -11,3 +11,4 @@ dependencies = []
 
 [project.scripts]
 xfi-guard = "xfi_guard.cli:main"
+xfi-guard-daemon = "xfi_guard.daemon:main"
