@@ -1,6 +1,6 @@
 [Unit]
 Description=XFI Guard Telegram Administration Bot
-After=network-online.target
+After=network-online.target xfi-guard.service
 Wants=network-online.target
 
 [Service]
@@ -8,8 +8,9 @@ Type=simple
 User=root
 WorkingDirectory=/opt/xfi-guard
 EnvironmentFile=-/etc/xfi-guard/bot.env
-ExecStart=/usr/bin/python3 -m xfi_guard.bot
-Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.bot
+Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
