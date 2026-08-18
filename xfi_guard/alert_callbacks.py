@@ -1,6 +1,6 @@
 """Secure Telegram callbacks and AI provider controls."""
 from __future__ import annotations
-import asyncio, ipaddress, json, os, time
+import asyncio, ipaddress, json, os, subprocess, time
 from pathlib import Path
 from urllib import request
 from aiogram import F
@@ -40,6 +40,7 @@ def _ai_keyboard():
         [KeyboardButton(text="🧠 Модель Gemini"), KeyboardButton(text="🧠 Модель Groq")],
         [KeyboardButton(text="🧠 Модель OpenRouter")],
         [KeyboardButton(text="🧪 Проверить AI"), KeyboardButton(text="ℹ️ Статус AI")],
+        [KeyboardButton(text="⬆️ Обновить XFI Guard")],
         [KeyboardButton(text="⬅️ Главное меню")]], resize_keyboard=True, is_persistent=True)
 
 def _back_ai_keyboard():
@@ -96,6 +97,20 @@ def register_alert_callbacks(dp,admin_ids):
         if not alert: await callback.answer("Тревога не найдена",show_alert=True); return
         decision=get_decision(alert.get("decision_id")) if alert.get("decision_id") else None
         await callback.answer(); await callback.message.answer(json.dumps({"alert":alert,"ai_decision":decision},ensure_ascii=False,indent=2)[:3900])
+
+    @dp.message(F.text == "⬆️ Обновить XFI Guard")
+    async def manual_update(message, state:FSMContext):
+        if not message.from_user or message.from_user.id not in admin_ids: return
+        await state.clear()
+        try:
+            result = await asyncio.to_thread(subprocess.run, ["systemctl", "start", "xfi-guard-update.service"], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                detail=(result.stderr or result.stdout or "systemctl завершился с ошибкой")[:1800]
+                await message.answer(f"❌ Не удалось запустить обновление XFI Guard.\n\n{detail}", reply_markup=_ai_keyboard())
+                return
+            await message.answer("⏳ Обновление XFI Guard запущено.\n\nGitHub → проверка → валидация → перезапуск выполняются автоматически.\nРезультат будет отправлен ботом после завершения.", reply_markup=_ai_keyboard())
+        except Exception as exc:
+            await message.answer(f"❌ Ошибка запуска обновления: {type(exc).__name__}: {exc}", reply_markup=_ai_keyboard())
 
     # OpenRouter controls are registered here because bot.py already calls this function.
     @dp.message(F.text == "🟣 OpenRouter")
