@@ -1,8 +1,7 @@
-"""Safe XFI Guard updater.
+"""Безопасное обновление XFI Guard.
 
-Checks GitHub main, notifies administrators, applies the update only after
-explicit confirmation, validates the new code, restarts the bot and rolls
-back automatically if the new version does not become healthy.
+Источник релизов: только origin/main. Перед применением создаётся локальная
+точка отката, выполняется валидация, после рестарта проверяется бот.
 """
 from __future__ import annotations
 
@@ -13,36 +12,68 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import urljoin
 
-REPO = Path("/opt/xfi-guard")
-SERVICE = "xfi-guard-bot"
+REPO = Path(os.getenv("XFI_GUARD_REPO", "/opt/xfi-guard"))
+SERVICE = os.getenv("XFI_GUARD_SERVICE", "xfi-guard-bot")
 GITHUB_API = "https://api.github.com/repos/deilja/XFI_Guard/commits/main"
 LOCK_FILE = Path("/run/xfi-guard-update.lock")
 NOTIFIED_FILE = Path("/var/lib/xfi-guard/update-notified")
+ROLLBACK_BRANCH = "xfi-guard-pre-update"
 
 
 def run(*args: str, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, cwd=REPO, text=True, capture_output=True, timeout=timeout, check=check)
 
 
+def telegram_api_base() -> str:
+    """Возвращает URL Bot API. По умолчанию используется официальный API.
+
+    XFI_GUARD_TELEGRAM_API_URL должен быть именно HTTP(S)-адресом Bot API,
+    совместимым с Telegram Bot API. Сырой TCP-forward на 10.70.x.x:8081 сюда
+    подставлять нельзя: он не является HTTP CONNECT/HTTPS endpoint.
+    """
+    value = os.getenv("XFI_GUARD_TELEGRAM_API_URL", "https://api.telegram.org/").strip()
+    if not value.startswith(("https://", "http://")):
+        raise RuntimeError("XFI_GUARD_TELEGRAM_API_URL должен начинаться с http:// или https://")
+    return value.rstrip("/") + "/"
+
+
 def notify(text: str, keyboard: list[list[dict]] | None = None) -> bool:
     token = os.getenv("XFI_GUARD_BOT_TOKEN")
     admin_ids = [x.strip() for x in os.getenv("XFI_GUARD_ADMIN_IDS", "").split(",") if x.strip().isdigit()]
     if not token or not admin_ids:
+        print("Telegram notification skipped: token/admin ids are not configured", file=sys.stderr)
         return False
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    try:
+        base = telegram_api_base()
+    except Exception as exc:
+        print(f"Telegram notification configuration error: {exc}", file=sys.stderr)
+        return False
+
+    endpoint = urljoin(base, f"bot{token}/sendMessage")
+    ok = True
     for chat_id in admin_ids:
         payload: dict[str, object] = {"chat_id": int(chat_id), "text": text}
         if keyboard:
             payload["reply_markup"] = {"inline_keyboard": keyboard}
-        data = json.dumps(payload).encode()
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        data = json.dumps(payload, ensure_ascii=False).encode()
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={"Content-Type": "application/json", "User-Agent": "XFI-Guard-Updater"},
+            method="POST",
+        )
         try:
-            with urllib.request.urlopen(req, timeout=15):
-                pass
+            with urllib.request.urlopen(req, timeout=15) as response:
+                body = json.loads(response.read().decode())
+                if not body.get("ok"):
+                    raise RuntimeError(str(body))
         except Exception as exc:
-            print(f"Telegram notification failed: {exc}", file=sys.stderr)
-    return True
+            ok = False
+            print(f"Telegram notification failed for {chat_id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    return ok
 
 
 def github_head() -> str:
@@ -51,11 +82,19 @@ def github_head() -> str:
         headers={"Accept": "application/vnd.github+json", "User-Agent": "XFI-Guard-Updater"},
     )
     with urllib.request.urlopen(req, timeout=20) as response:
-        return str(json.loads(response.read().decode())["sha"])
+        data = json.loads(response.read().decode())
+    sha = str(data.get("sha", "")).strip()
+    if len(sha) != 40:
+        raise RuntimeError("GitHub не вернул корректный SHA main")
+    return sha
 
 
 def local_head() -> str:
     return run("git", "rev-parse", "HEAD").stdout.strip()
+
+
+def worktree_clean() -> bool:
+    return not bool(run("git", "status", "--porcelain", check=True).stdout.strip())
 
 
 def acquire_lock() -> bool:
@@ -94,18 +133,16 @@ def clear_notified() -> None:
         pass
 
 
-def bot_healthy(wait: int = 20) -> bool:
+def bot_healthy(wait: int = 30) -> bool:
     deadline = time.time() + wait
     while time.time() < deadline:
-        status = subprocess.run(
-            ["systemctl", "is-active", SERVICE], text=True, capture_output=True
-        ).stdout.strip()
+        status = subprocess.run(["systemctl", "is-active", SERVICE], text=True, capture_output=True).stdout.strip()
         if status == "active":
             logs = subprocess.run(
-                ["journalctl", "-u", SERVICE, "-n", "40", "--no-pager", "-o", "cat"],
+                ["journalctl", "-u", SERVICE, "-n", "80", "--no-pager", "-o", "cat"],
                 text=True, capture_output=True,
             ).stdout
-            if "polling запущен" in logs:
+            if "polling запущен" in logs or "polling" in logs.lower():
                 return True
         time.sleep(2)
     return False
@@ -132,19 +169,19 @@ def check_update() -> int:
             return 0
         if read_notified() == remote:
             return 0
-        sent = notify(
+        text = (
             "🆕 Доступно обновление XFI Guard\n\n"
             f"Текущая версия: {current[:8]}\n"
             f"Новая версия: {remote[:8]}\n\n"
-            "Обновление выполнится только после подтверждения.",
-            [[{"text": "⬆️ Обновить XFI Guard", "callback_data": "xfi_update"}]],
+            "Источник: GitHub main\n"
+            "Обновление выполнится только после подтверждения."
         )
-        if sent:
+        if notify(text, [[{"text": "⬆️ Обновить XFI Guard", "callback_data": "xfi_update"}]]):
             write_notified(remote)
         print(f"Update available: {current} -> {remote}")
         return 0
     except Exception as exc:
-        print(f"Update check failed: {exc}", file=sys.stderr)
+        print(f"Update check failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     finally:
         release_lock()
@@ -154,37 +191,43 @@ def apply_update() -> int:
     if not acquire_lock():
         notify("⚠️ Обновление XFI Guard уже выполняется.")
         return 2
+
     old = ""
     try:
+        if not worktree_clean():
+            raise RuntimeError("Рабочее дерево Git не чистое. Обновление остановлено, локальные изменения не трогаются.")
+
         old = local_head()
         notify(f"⏳ Начинаю обновление XFI Guard\n\nВерсия: {old[:8]}")
-        run("git", "fetch", "origin", "main", timeout=120)
+        run("git", "fetch", "--prune", "origin", "main", timeout=120)
         remote = run("git", "rev-parse", "origin/main").stdout.strip()
         if old == remote:
             clear_notified()
-            notify("ℹ️ Обновление уже не требуется. Сервер работает на актуальной версии.")
+            notify("ℹ️ Обновление не требуется. Сервер уже на актуальном main.")
             return 0
 
-        run("git", "branch", "-f", "xfi-guard-pre-update", old)
+        run("git", "branch", "-f", ROLLBACK_BRANCH, old)
         run("git", "reset", "--hard", "origin/main")
 
         req = REPO / "requirements-bot.txt"
         if req.exists():
             run(str(REPO / ".venv/bin/pip"), "install", "-r", str(req), timeout=300)
+
         validate()
         subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
         subprocess.run(["systemctl", "restart", SERVICE], check=True, timeout=60)
 
-        if bot_healthy():
-            clear_notified()
-            notify(
-                "✅ XFI Guard успешно обновлён\n\n"
-                f"Было: {old[:8]}\n"
-                f"Стало: {remote[:8]}\n\n"
-                "Бот снова работает."
-            )
-            return 0
-        raise RuntimeError("Новая версия не прошла проверку работоспособности")
+        if not bot_healthy():
+            raise RuntimeError("Новая версия не прошла проверку работоспособности")
+
+        clear_notified()
+        notify(
+            "✅ XFI Guard успешно обновлён\n\n"
+            f"Было: {old[:8]}\n"
+            f"Стало: {remote[:8]}\n\n"
+            "Бот снова работает."
+        )
+        return 0
     except Exception as exc:
         rollback_ok = False
         if old:
@@ -194,14 +237,14 @@ def apply_update() -> int:
                 subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60)
                 rollback_ok = bot_healthy()
                 clear_notified()
-            except Exception:
-                rollback_ok = False
+            except Exception as rollback_exc:
+                print(f"Rollback failed: {type(rollback_exc).__name__}: {rollback_exc}", file=sys.stderr)
         notify(
             "❌ Обновление XFI Guard не удалось\n\n"
-            f"Ошибка: {str(exc)[:700]}\n\n"
+            f"Ошибка: {type(exc).__name__}: {str(exc)[:650]}\n\n"
             f"Автоматический откат: {'✅ выполнен' if rollback_ok else '❌ НЕ выполнен'}"
         )
-        print(f"Update failed: {exc}; rollback={rollback_ok}", file=sys.stderr)
+        print(f"Update failed: {type(exc).__name__}: {exc}; rollback={rollback_ok}", file=sys.stderr)
         return 1
     finally:
         release_lock()
