@@ -35,3 +35,5 @@ def run_health_check():
             except Exception as exc: err=f"{type(exc).__name__}: {exc}"
             latency=round((time.monotonic()-started)*1000,1); record(provider,model,ok,latency,err); results.append({"provider":provider,"model":model,"ok":ok,"latency_ms":latency,"error":err})
     return {"results":results,"weights":adapt_weights(),"timestamp":datetime.now(timezone.utc).isoformat()}
+if __name__ == "__main__":
+    result=run_health_check(); failed=[x for x in result["results"] if not x["ok"]]; print(json.dumps({"ok":not failed,"failed":len(failed),"weights":result["weights"]},ensure_ascii=False))
