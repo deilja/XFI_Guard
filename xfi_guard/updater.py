@@ -25,7 +25,6 @@ ROLLBACK_BRANCH = "xfi-guard-pre-update"
 
 
 def _load_env_file() -> None:
-    """Подхватывает bot.env, если systemd environment недоступен."""
     if not ENV_FILE.is_file():
         return
     for raw in ENV_FILE.read_text(encoding="utf-8").splitlines():
@@ -47,10 +46,15 @@ def run(*args: str, check: bool = True, timeout: int = 120) -> subprocess.Comple
 
 
 def telegram_api_base() -> str:
-    value = os.getenv("XFI_GUARD_TELEGRAM_API_URL", "https://api.telegram.org/").strip()
-    if not value.startswith(("https://", "http://")):
-        raise RuntimeError("XFI_GUARD_TELEGRAM_API_URL должен начинаться с http:// или https://")
-    return value.rstrip("/") + "/"
+    value = os.getenv("XFI_GUARD_TELEGRAM_API_URL", "").strip()
+    if not value:
+        return "https://api.telegram.org/"
+    if value.startswith(("https://", "http://")):
+        return value.rstrip("/") + "/"
+    # Старые конфигурации иногда ошибочно содержали bot-token вместо URL.
+    # В таком случае безопасно используем официальный Telegram API.
+    print("Некорректный XFI_GUARD_TELEGRAM_API_URL; используется https://api.telegram.org/", file=sys.stderr)
+    return "https://api.telegram.org/"
 
 
 def _write_status(status: str, message: str, old: str = "", new: str = "") -> None:
@@ -69,11 +73,7 @@ def notify(text: str, keyboard: list[list[dict]] | None = None) -> bool:
     if not token or not admin_ids:
         print("Telegram notification skipped: XFI_GUARD_BOT_TOKEN/XFI_GUARD_ADMIN_IDS not configured", file=sys.stderr)
         return False
-    try:
-        base = telegram_api_base()
-    except Exception as exc:
-        print(f"Telegram notification configuration error: {exc}", file=sys.stderr)
-        return False
+    base = telegram_api_base()
     endpoint = urljoin(base, f"bot{token}/sendMessage")
     ok = True
     for chat_id in admin_ids:
@@ -108,7 +108,23 @@ def local_head() -> str:
 
 
 def worktree_clean() -> bool:
-    return not bool(run("git", "status", "--porcelain", check=True).stdout.strip())
+    """Tracked-изменения блокируют обновление; build/cache/backup игнорируются."""
+    result = run("git", "status", "--porcelain", check=True).stdout.splitlines()
+    ignored_untracked_prefixes = (
+        "?? build/",
+        "?? xfi_guard.egg-info/",
+        "?? xfi_guard/__pycache__/",
+        "?? backup/",
+        "?? .pytest_cache/",
+    )
+    ignored_untracked_suffixes = (".bak", ".pyc")
+    for line in result:
+        if any(line.startswith(prefix) for prefix in ignored_untracked_prefixes):
+            continue
+        if line.startswith("?? ") and line[3:].endswith(ignored_untracked_suffixes):
+            continue
+        return False
+    return True
 
 
 def acquire_lock() -> bool:
@@ -192,7 +208,8 @@ def apply_update() -> int:
         notify("⚠️ Обновление XFI Guard уже выполняется."); return 2
     old = ""
     try:
-        if not worktree_clean(): raise RuntimeError("Рабочее дерево Git не чистое. Обновление остановлено, локальные изменения не трогаются.")
+        if not worktree_clean():
+            raise RuntimeError("Рабочее дерево Git содержит реальные локальные изменения. Обновление остановлено, локальные изменения не трогаются.")
         old = local_head(); _write_status("запущено", f"Начинаю обновление: {old[:8]}", old)
         notify(f"⏳ Начинаю обновление XFI Guard\n\nВерсия: {old[:8]}")
         run("git", "fetch", "--prune", "origin", "main", timeout=120)
