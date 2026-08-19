@@ -1,33 +1,12 @@
-"""Configuration loader using the Python standard library TOML parser."""
-
+"""Validated monitor configuration loaded from TOML."""
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
 
+from .ai_config import MonitorSettings
 
-@dataclass(frozen=True)
-class MonitorConfig:
-    interval_seconds: int = 60
-    log_level: str = "INFO"
-    output_file: str = "/var/log/xfi-guard/monitor.jsonl"
-    state_file: str = "/var/lib/xfi-guard/state.json"
-    disk_warning_percent: int = 85
-    memory_warning_percent: int = 90
-    vpn_services: tuple[str, ...] = ("xray", "x-ui", "3x-ui")
-    vpn_ports: tuple[int, ...] = (22, 80, 443, 2053, 2083, 2087, 2096)
-    ssh_log: str = "/var/log/auth.log"
-    fail2ban_log: str = "/var/log/fail2ban.log"
-    max_events_per_cycle: int = 100
-    telegram_enabled: bool = False
-    telegram_cooldown_seconds: int = 300
-    ai_provider: str = "gemini"
-    ai_max_events_per_cycle: int = 10
-    auto_block_enabled: bool = False
-    auto_block_confidence: float = 0.90
-    auto_block_min_attempts: int = 5
-    auto_block_db: str = "/var/lib/xfi-guard/security.db"
+MonitorConfig = MonitorSettings
 
 
 def load_config(path: str | Path = "config.toml") -> MonitorConfig:
@@ -43,24 +22,24 @@ def load_config(path: str | Path = "config.toml") -> MonitorConfig:
     telegram = data.get("telegram", {})
     ai = data.get("ai", {})
     defense = data.get("auto_block", {})
-    return MonitorConfig(
-        interval_seconds=max(5, int(monitor.get("interval_seconds", 60))),
-        log_level=str(monitor.get("log_level", "INFO")).upper(),
-        output_file=str(monitor.get("output_file", "/var/log/xfi-guard/monitor.jsonl")),
-        state_file=str(monitor.get("state_file", "/var/lib/xfi-guard/state.json")),
-        disk_warning_percent=int(thresholds.get("disk_warning_percent", 85)),
-        memory_warning_percent=int(thresholds.get("memory_warning_percent", 90)),
-        vpn_services=tuple(str(item) for item in vpn.get("services", ["xray", "x-ui", "3x-ui"])),
-        vpn_ports=tuple(int(item) for item in vpn.get("ports", [22, 80, 443, 2053, 2083, 2087, 2096])),
-        ssh_log=str(events.get("ssh_log", "/var/log/auth.log")),
-        fail2ban_log=str(events.get("fail2ban_log", "/var/log/fail2ban.log")),
-        max_events_per_cycle=max(1, int(events.get("max_events_per_cycle", 100))),
-        telegram_enabled=bool(telegram.get("enabled", False)),
-        telegram_cooldown_seconds=max(0, int(telegram.get("cooldown_seconds", 300))),
-        ai_provider=str(ai.get("provider", "gemini")).lower(),
-        ai_max_events_per_cycle=max(0, int(ai.get("max_events_per_cycle", 10))),
-        auto_block_enabled=bool(defense.get("enabled", False)),
-        auto_block_confidence=max(0.0, min(1.0, float(defense.get("confidence", 0.90)))),
-        auto_block_min_attempts=max(1, int(defense.get("min_attempts", 5))),
-        auto_block_db=str(defense.get("db", "/var/lib/xfi-guard/security.db")),
-    )
+    return MonitorConfig.model_validate({
+        "interval_seconds": monitor.get("interval_seconds", 60),
+        "log_level": str(monitor.get("log_level", "INFO")).upper(),
+        "output_file": monitor.get("output_file", "/var/log/xfi-guard/monitor.jsonl"),
+        "state_file": monitor.get("state_file", "/var/lib/xfi-guard/state.json"),
+        "disk_warning_percent": thresholds.get("disk_warning_percent", 85),
+        "memory_warning_percent": thresholds.get("memory_warning_percent", 90),
+        "vpn_services": vpn.get("services", ["xray", "x-ui", "3x-ui"]),
+        "vpn_ports": vpn.get("ports", [22, 80, 443, 2053, 2083, 2087, 2096]),
+        "ssh_log": events.get("ssh_log", "/var/log/auth.log"),
+        "fail2ban_log": events.get("fail2ban_log", "/var/log/fail2ban.log"),
+        "max_events_per_cycle": events.get("max_events_per_cycle", 100),
+        "telegram_enabled": telegram.get("enabled", False),
+        "telegram_cooldown_seconds": telegram.get("cooldown_seconds", 300),
+        "ai_provider": str(ai.get("provider", "gemini")).lower(),
+        "ai_max_events_per_cycle": ai.get("max_events_per_cycle", 10),
+        "auto_block_enabled": defense.get("enabled", False),
+        "auto_block_confidence": defense.get("confidence", 0.90),
+        "auto_block_min_attempts": defense.get("min_attempts", 5),
+        "auto_block_db": defense.get("db", "/var/lib/xfi-guard/security.db"),
+    })
