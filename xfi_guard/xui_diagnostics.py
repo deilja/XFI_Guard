@@ -1,12 +1,6 @@
-"""Read-only 3X-UI diagnostics for the Telegram administration bot.
-
-The module deliberately performs no configuration changes. It checks API reachability,
-authentication, inbound inventory, common configuration mistakes, listening ports,
-and local 3X-UI/Xray service health when available.
-"""
+"""Read-only 3X-UI diagnostics for the Telegram administration bot."""
 from __future__ import annotations
 
-import asyncio
 import socket
 import subprocess
 import time
@@ -17,13 +11,7 @@ from .xui_inbounds import XUIClient
 
 def _service_status(name: str) -> dict:
     try:
-        p = subprocess.run(
-            ["systemctl", "is-active", name],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-        )
+        p = subprocess.run(["systemctl", "is-active", name], capture_output=True, text=True, timeout=3, check=False)
         state = (p.stdout or "").strip() or "unknown"
         return {"service": name, "state": state, "active": state == "active"}
     except Exception as exc:
@@ -32,11 +20,7 @@ def _service_status(name: str) -> dict:
 
 def _candidate_services() -> list[dict]:
     result = []
-    seen = set()
-    for name in ("x-ui", "3x-ui", "xray", "xray.service"):
-        if name in seen:
-            continue
-        seen.add(name)
+    for name in ("x-ui", "3x-ui", "xray"):
         result.append(_service_status(name))
     return result
 
@@ -48,11 +32,7 @@ def _port_check(host: str, port: int, timeout: float = 2.5) -> dict:
             pass
         return {"ok": True, "latency_ms": round((time.monotonic() - started) * 1000, 1)}
     except OSError as exc:
-        return {
-            "ok": False,
-            "latency_ms": round((time.monotonic() - started) * 1000, 1),
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+        return {"ok": False, "latency_ms": round((time.monotonic() - started) * 1000, 1), "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _parse_int(value):
@@ -89,14 +69,7 @@ def _inspect_inbounds(items: list[dict]) -> dict:
     for port, names in ports.items():
         if len(names) > 1:
             findings.append(f"порт {port}: несколько inbound ({', '.join(names[:4])})")
-    return {
-        "total": len(items),
-        "enabled": enabled,
-        "disabled": max(0, len(items) - enabled),
-        "protocols": protocols,
-        "findings": findings,
-        "ports": sorted(ports),
-    }
+    return {"total": len(items), "enabled": enabled, "disabled": max(0, len(items) - enabled), "protocols": protocols, "findings": findings, "ports": sorted(ports)}
 
 
 def diagnose_profile(item: dict) -> dict:
@@ -106,6 +79,7 @@ def diagnose_profile(item: dict) -> dict:
         "name": item.get("name", "unknown"),
         "url": item.get("url", ""),
         "api": {"ok": False},
+        "server": {"ok": False},
         "inbounds": {},
         "port_checks": [],
         "services": _candidate_services(),
@@ -114,15 +88,27 @@ def diagnose_profile(item: dict) -> dict:
     client = XUIClient(item["url"], item.get("token") or None, timeout=8)
     try:
         status, body = client.list_inbounds()
-        result["api"] = {
-            "ok": status < 300 and bool(body.get("success", True)),
-            "http_status": status,
-            "latency_ms": round((time.monotonic() - started) * 1000, 1),
-            "message": body.get("msg", ""),
-        }
-        if not result["api"]["ok"]:
+        api_ok = status < 300 and bool(body.get("success", True))
+        result["api"] = {"ok": api_ok, "http_status": status, "latency_ms": round((time.monotonic() - started) * 1000, 1), "message": body.get("msg", "")}
+        if not api_ok:
             result["findings"].append("API недоступен или авторизация отклонена")
             return result
+
+        try:
+            server_status, server_body = client.get_server_status()
+            server_ok = server_status < 300 and bool(server_body.get("success", True))
+            result["server"] = {
+                "ok": server_ok,
+                "http_status": server_status,
+                "message": server_body.get("msg", ""),
+                "obj": server_body.get("obj") or {},
+            }
+            if not server_ok:
+                result["findings"].append("API server/status недоступен")
+        except Exception as exc:
+            result["server"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            result["findings"].append("Не удалось получить server/status")
+
         items = body.get("obj") or []
         result["inbounds"] = _inspect_inbounds(items)
         result["findings"].extend(result["inbounds"]["findings"])
@@ -145,16 +131,22 @@ def diagnose_all(items: list[dict]) -> list[dict]:
 
 
 def format_diagnostics(report: list[dict]) -> str:
-    """Produce a Telegram-safe compact report without exposing API tokens."""
     if not report:
         return "🔍 Полная диагностика 3X-UI\n\n❌ Нет сохранённых подключений."
     lines = ["🔍 ПОЛНАЯ ДИАГНОСТИКА 3X-UI", ""]
     for item in report:
         api = item["api"]
         ib = item.get("inbounds") or {}
+        server = item.get("server") or {}
         lines.append(f"⚙️ {item['name']}")
         if api.get("ok"):
             lines.append(f"🟢 API: OK ({api.get('http_status', '-')}, {api.get('latency_ms', '-')} ms)")
+            if server.get("ok"):
+                obj = server.get("obj") or {}
+                version = obj.get("version") or obj.get("xrayVersion") or obj.get("xray_version")
+                lines.append(f"🧠 Server status: OK" + (f" | Xray: {version}" if version else ""))
+            else:
+                lines.append("🟠 Server status: не подтверждён")
             lines.append(f"📡 Inbounds: {ib.get('total', 0)} | активных: {ib.get('enabled', 0)} | выключенных: {ib.get('disabled', 0)}")
             protocols = ", ".join(f"{k}:{v}" for k, v in sorted((ib.get("protocols") or {}).items())) or "нет"
             lines.append(f"🔌 Протоколы: {protocols}")
