@@ -28,7 +28,7 @@ def scan_once(threshold=60,max_ips=5,notify=True):
     candidates=sorted(candidates,key=lambda x:int(x.get("risk_score",0) or 0),reverse=True)[:max(1,min(max_ips,20))]; alerts=[]; analyzer=AIAnalyzer()
     for item in candidates:
         event={"ip":item.get("ip"),"risk_score":item.get("risk_score"),"risk":item.get("risk"),"events":item.get("events"),"sources":item.get("sources"),"reasons":item.get("reasons")}
-        consensus=analyzer.analyze_consensus(event); decision=create_ai_decision(event,consensus)
+        consensus=analyzer.analyze_consensus(event); decision=create_ai_decision(event,consensus,state_file=STATE_FILE.with_name("ai_decisions.json"))
         alert={"id":_fingerprint(item),"decision_id":decision["id"],"timestamp":datetime.now(timezone.utc).isoformat(),"ip":item.get("ip"),"score":item.get("risk_score"),"risk":item.get("risk"),"consensus":consensus}; alerts.append(alert)
         if notify: send_alert(alert)
     state["alerts"]=(state.get("alerts",[])+alerts)[-200:]; state["updated_at"]=datetime.now(timezone.utc).isoformat(); _save(state); return {"alerts":alerts,"active_count":surface.get("active_count",0),"scanned":len(surface.get("ips",[]))}
