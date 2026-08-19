@@ -14,7 +14,7 @@ class AISettings(BaseModel):
     provider: Provider = "gemini"
     gemini_model: str = "gemini-2.5-flash"
     groq_model: str = "openai/gpt-oss-20b"
-    openrouter_model: str = "openai/gpt-oss-20b"
+    openrouter_model: str = "openrouter/free"
     openrouter_models: tuple[str, ...] = ()
     gemini_key: str = ""
     groq_key: str = ""
