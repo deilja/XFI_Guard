@@ -1,4 +1,4 @@
-"""Continuous read-only monitoring loop."""
+"""Continuous monitoring loop with optional AI-assisted SSH auto defense."""
 
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ from pathlib import Path
 
 from .ai import AIAnalyzer
 from .alerts import AlertManager
+from .auto_blocker import AutoBlocker
 from .checks import check_disk, check_memory
 from .config import MonitorConfig
 from .events import deduplicate, parse_file
 from .security import collect_security_checks
 from .state import StateStore
+from .updater import notify
 from .vpn import check_listening_ports, check_service_candidates
 
 LOG = logging.getLogger("xfi_guard.monitor")
@@ -50,11 +52,37 @@ def write_snapshot(path: str, snapshot: list[dict], events: list[dict] | None = 
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _notify_auto_blocks(results: list[dict]) -> None:
+    for item in results:
+        if item.get("action") == "blocked":
+            notify(
+                "🚨 XFI Guard — АВТОБЛОКИРОВКА\n\n"
+                f"IP: {item['ip']}\n"
+                f"Причина: SSH brute-force\n"
+                f"Попыток: {item['attempts']}\n"
+                f"Уровень: {str(item['risk']).upper()}\n"
+                f"Уверенность AI: {item['confidence']:.0%}\n\n"
+                f"{item.get('message', 'IP автоматически заблокирован UFW.')}"
+            )
+        elif item.get("action") == "block_failed":
+            notify(
+                "⚠️ XFI Guard — автоматическая блокировка не выполнена\n\n"
+                f"IP: {item['ip']}\n"
+                f"Причина: {item.get('message', 'ошибка UFW')}"
+            )
+
+
 def run_forever(config: MonitorConfig) -> None:
     running = True
     state = StateStore(config.state_file)
     alerts = AlertManager(cooldown=config.telegram_cooldown_seconds) if config.telegram_enabled else None
     ai = AIAnalyzer(config.ai_provider)
+    auto_blocker = AutoBlocker(
+        enabled=config.auto_block_enabled,
+        confidence=config.auto_block_confidence,
+        min_attempts=config.auto_block_min_attempts,
+        db_path=config.auto_block_db,
+    )
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal running
@@ -62,7 +90,10 @@ def run_forever(config: MonitorConfig) -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    LOG.info("XFI Guard monitor started; AI provider=%s", config.ai_provider)
+    LOG.info(
+        "XFI Guard monitor started; AI provider=%s; auto_block=%s; min_attempts=%s; confidence=%.2f",
+        config.ai_provider, config.auto_block_enabled, config.auto_block_min_attempts, config.auto_block_confidence,
+    )
     while running:
         snapshot = collect_snapshot(config)
         events = collect_security_events(config, state)
@@ -72,7 +103,17 @@ def run_forever(config: MonitorConfig) -> None:
                 if analysis:
                     event["ai_provider"] = ai.provider
                     event["ai_analysis"] = analysis
-        write_snapshot(config.output_file, snapshot, events)
+
+        if events:
+            defense_results = auto_blocker.evaluate(events)
+            if defense_results:
+                write_snapshot(config.output_file, snapshot, events + [{"event_type": "auto_defense", **item} for item in defense_results])
+                _notify_auto_blocks(defense_results)
+            else:
+                write_snapshot(config.output_file, snapshot, events)
+        else:
+            write_snapshot(config.output_file, snapshot, events)
+
         if alerts:
             for event in events:
                 if alerts.send(event):
