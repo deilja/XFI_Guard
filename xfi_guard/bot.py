@@ -25,6 +25,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 
 TOKEN = os.getenv("XFI_GUARD_BOT_TOKEN")
 ADMIN_IDS = {int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS", "").split(",") if v.strip().isdigit()}
+WEBHOOK_DOMAIN = os.getenv("XFI_GUARD_WEBHOOK_DOMAIN", "").strip().rstrip("/")
+WEBHOOK_PATH = os.getenv("XFI_GUARD_WEBHOOK_PATH", "/xfi-guard/webhook").strip() or "/xfi-guard/webhook"
+WEBHOOK_SECRET = os.getenv("XFI_GUARD_WEBHOOK_SECRET", "").strip()
+WEBHOOK_HOST = os.getenv("XFI_GUARD_WEBHOOK_HOST", "127.0.0.1")
+WEBHOOK_PORT = int(os.getenv("XFI_GUARD_WEBHOOK_PORT", "8080"))
+
 GROQ_MODELS = [
     ("🧠 GPT-OSS 120B", "openai/gpt-oss-120b"),
     ("🧠 GPT-OSS 20B", "openai/gpt-oss-20b"),
@@ -59,7 +65,7 @@ class SetupStates(StatesGroup):
 def admin(m): return bool(m.from_user and m.from_user.id in ADMIN_IDS)
 def mask(k): return k[:4] + "…" + k[-4:] if len(k) >= 8 else ("настроен" if k else "не настроен")
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows], resize_keyboard=True, is_persistent=True)
-def main_kb(): return kb([["📊 Статус", "🔐 Безопасность"], ["🛡 Fail2Ban", "🔥 UFW"], ["🌐 VPN/Xray", "📋 События"], ["🛡 Картина атак", "🤖 AI"], ["🧠 Security Brain", "🧠 Центр AI"], ["🚫 Блокировка IP", "🔄 Проверить сейчас"], ["❓ Помощь"]])
+def main_kb(): return kb([["📊 Статус", "🔐 Безопасность"], ["🛡 Fail2Ban", "🔥 UFW"], ["🌐 VPN/Xray", "📋 События"], ["🛡 Картина атак", "🤖 AI"], ["🧠 Security Brain", "🧠 Центр AI"], ["🚫 Блокировка IP", "🔄 Проверить сейчас"], ["🔄 Обновить XFI Guard"], ["❓ Помощь"]])
 def ai_kb(): return kb([["🟢 Gemini", "🔵 Groq", "🟣 OpenRouter"], ["🔀 Все AI вместе"], ["🔑 Ключ Gemini", "🔑 Ключ Groq"], ["🔑 Ключ OpenRouter"], ["🧠 Модель Gemini", "🧠 Модель Groq"], ["🧠 Модель OpenRouter"], ["🧪 Проверить AI", "ℹ️ Статус AI"], ["⬅️ Главное меню"]])
 def center_kb(): return kb([["📊 Анализ за 24 часа"], ["🚨 Топ атакующих IP"], ["🤖 AI-анализ сводки"], ["🤖 Рекомендации блокировки"], ["🔄 Обновить"], ["⬅️ Главное меню"]])
 def block_kb(): return kb([["🤖 Рекомендации AI"], ["📋 Выбрать IP из событий"], ["✏️ Ввести IP вручную"], ["📋 Заблокированные IP", "🔓 Разблокировать IP"], ["⬅️ Главное меню"]])
@@ -104,6 +110,12 @@ def build_dispatcher():
         await callback.answer("Обновление запущено")
         subprocess.Popen(["systemctl", "start", "xfi-guard-update.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         await callback.message.answer("⏳ Запущено безопасное обновление XFI Guard.")
+
+    @dp.message(F.text == "🔄 Обновить XFI Guard")
+    async def update_button(m):
+        if not admin(m): return
+        subprocess.Popen(["systemctl", "start", "xfi-guard-update.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        await m.answer("⏳ Запущено безопасное обновление XFI Guard.\n\nРезультат будет отправлен отдельным уведомлением.", reply_markup=main_kb())
 
     @dp.message(Command("start"))
     async def start(m, state):
@@ -187,16 +199,11 @@ def build_dispatcher():
     @dp.message(F.text == "🧠 Модель Groq")
     async def groq_model_menu(m, state):
         if not admin(m): return
+        await state.clear()
         cfg = load_ai(); key = cfg.get("groq_key") or os.getenv("GROQ_API_KEY", "")
-        if not key:
-            await m.answer("❌ Сначала подключите Groq через «🔑 Ключ Groq». ", reply_markup=ai_kb()); return
-        try:
-            models = await asyncio.to_thread(fetch_groq_models, key)
-        except Exception:
-            models = []
-        if not models: models = [mid for _, mid in GROQ_MODELS]
-        await state.set_state(SetupStates.groq_model)
-        await m.answer("🧠 Выберите модель Groq:", reply_markup=groq_model_kb(models, cfg.get("groq_model")))
+        if not key: await m.answer("❌ Сначала настройте Groq.", reply_markup=ai_kb()); return
+        try: models = await asyncio.to_thread(fetch_groq_models, key); await state.set_state(SetupStates.groq_model); await m.answer("🧠 Выберите модель Groq:", reply_markup=groq_model_kb(models, cfg.get("groq_model")))
+        except Exception as exc: await m.answer(f"❌ Не удалось получить список моделей: {type(exc).__name__}: {exc}", reply_markup=ai_kb())
 
     @dp.message(SetupStates.groq_model)
     async def groq_model_save(m, state):
@@ -255,11 +262,35 @@ def build_dispatcher():
         if admin(m): await m.answer("❓ XFI Guard\n\nSecurity Brain объединяет локальный анализ, Gemini, Groq и OpenRouter. AI не блокирует IP самостоятельно.", reply_markup=main_kb())
     return dp
 
+async def run_webhook(bot: Bot, dp: Dispatcher):
+    from aiohttp import web
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+    if not WEBHOOK_DOMAIN or not WEBHOOK_SECRET:
+        raise RuntimeError("Для webhook нужны XFI_GUARD_WEBHOOK_DOMAIN и XFI_GUARD_WEBHOOK_SECRET")
+    if not WEBHOOK_PATH.startswith("/"):
+        raise RuntimeError("XFI_GUARD_WEBHOOK_PATH должен начинаться с '/'")
+    webhook_url = f"https://{WEBHOOK_DOMAIN}{WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url, secret_token=WEBHOOK_SECRET, drop_pending_updates=True)
+    app = web.Application()
+    SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+    print(f"XFI Guard Bot: webhook {webhook_url} -> {WEBHOOK_HOST}:{WEBHOOK_PORT}", flush=True)
+    try:
+        await web._run_app(app, host=WEBHOOK_HOST, port=WEBHOOK_PORT, handle_signals=True)
+    finally:
+        await bot.delete_webhook(drop_pending_updates=False)
+
 async def main():
-    token = os.getenv("XFI_GUARD_BOT_TOKEN")
+    token = TOKEN or os.getenv("XFI_GUARD_BOT_TOKEN")
     if not token: raise RuntimeError("XFI_GUARD_BOT_TOKEN не задан")
-    bot = Bot(token=token); dp = build_dispatcher(); print("XFI Guard Bot: polling запущен", flush=True)
-    try: await dp.start_polling(bot)
-    finally: await bot.session.close()
+    bot = Bot(token=token); dp = build_dispatcher()
+    try:
+        if WEBHOOK_DOMAIN:
+            await run_webhook(bot, dp)
+        else:
+            print("XFI Guard Bot: polling запущен", flush=True)
+            await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__": asyncio.run(main())
