@@ -13,6 +13,7 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 from .xui_api_store import load, remove, upsert
 from .xui_inbounds import XUIClient
+from .xui_diagnostics import diagnose_all, format_diagnostics
 
 
 class XUIStates(StatesGroup):
@@ -44,7 +45,8 @@ def _mask(token: str) -> str:
 def xui_menu():
     return _kb([
         ["➕ Добавить 3X-UI", "📋 Список 3X-UI"],
-        ["🧪 Проверить 3X-UI", "🗑 Удалить 3X-UI"],
+        ["🧪 Проверить 3X-UI", "🔍 Полная диагностика 3X-UI"],
+        ["🗑 Удалить 3X-UI"],
         ["⬅️ Главное меню"],
     ])
 
@@ -156,6 +158,20 @@ def install_xui_handlers(dp: Dispatcher) -> None:
             else:
                 lines.append(f"❌ {item['name']}: {result['error']}")
         await m.answer("🧪 Проверка 3X-UI\n\n" + "\n".join(lines), reply_markup=xui_menu())
+
+    @dp.message(F.text == "🔍 Полная диагностика 3X-UI")
+    async def diagnose_xui(m):
+        if not _admin(m): return
+        items = load()
+        if not items:
+            await m.answer("❌ Сначала добавьте API 3X-UI.", reply_markup=xui_menu())
+            return
+        await m.answer("🔍 Запускаю полную read-only диагностику 3X-UI...", reply_markup=xui_menu())
+        try:
+            report = await asyncio.to_thread(diagnose_all, items)
+            await m.answer(format_diagnostics(report), reply_markup=xui_menu())
+        except Exception as exc:
+            await m.answer(f"❌ Диагностика 3X-UI: {type(exc).__name__}: {exc}", reply_markup=xui_menu())
 
     @dp.message(F.text == "🗑 Удалить 3X-UI")
     async def remove_prompt(m, state: FSMContext):
