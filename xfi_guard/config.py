@@ -24,6 +24,10 @@ class MonitorConfig:
     telegram_cooldown_seconds: int = 300
     ai_provider: str = "gemini"
     ai_max_events_per_cycle: int = 10
+    auto_block_enabled: bool = False
+    auto_block_confidence: float = 0.90
+    auto_block_min_attempts: int = 5
+    auto_block_db: str = "/var/lib/xfi-guard/security.db"
 
 
 def load_config(path: str | Path = "config.toml") -> MonitorConfig:
@@ -38,6 +42,7 @@ def load_config(path: str | Path = "config.toml") -> MonitorConfig:
     events = data.get("events", {})
     telegram = data.get("telegram", {})
     ai = data.get("ai", {})
+    defense = data.get("auto_block", {})
     return MonitorConfig(
         interval_seconds=max(5, int(monitor.get("interval_seconds", 60))),
         log_level=str(monitor.get("log_level", "INFO")).upper(),
@@ -54,4 +59,8 @@ def load_config(path: str | Path = "config.toml") -> MonitorConfig:
         telegram_cooldown_seconds=max(0, int(telegram.get("cooldown_seconds", 300))),
         ai_provider=str(ai.get("provider", "gemini")).lower(),
         ai_max_events_per_cycle=max(0, int(ai.get("max_events_per_cycle", 10))),
+        auto_block_enabled=bool(defense.get("enabled", False)),
+        auto_block_confidence=max(0.0, min(1.0, float(defense.get("confidence", 0.90)))),
+        auto_block_min_attempts=max(1, int(defense.get("min_attempts", 5))),
+        auto_block_db=str(defense.get("db", "/var/lib/xfi-guard/security.db")),
     )
