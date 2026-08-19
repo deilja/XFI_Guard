@@ -11,6 +11,7 @@ from collections import defaultdict
 from typing import Any, ClassVar
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 _original_send_message = Bot.send_message
@@ -105,11 +106,33 @@ async def _send_message_with_menu_cleanup(self: Bot, chat_id: int | str, text: s
         return result
 
 
-async def _callback_bridge(callback: CallbackQuery, dispatcher: Dispatcher) -> None:
-    """Delete the exact clicked menu, then route its callback as a message."""
-    if not callback.message or not callback.data:
+async def _safe_callback_answer(callback: CallbackQuery) -> bool:
+    """Acknowledge a callback without letting an expired query crash the bot.
+
+    Telegram callback queries have a short acknowledgement window. A delayed
+    or replayed button can legitimately produce ``query is too old`` / invalid
+    query errors. The menu action itself should still be processed.
+    """
+    try:
         await callback.answer()
+        return True
+    except TelegramBadRequest as exc:
+        message = str(exc).lower()
+        if "query is too old" in message or "response timeout expired" in message or "query id is invalid" in message:
+            return False
+        raise
+
+
+async def _callback_bridge(callback: CallbackQuery, dispatcher: Dispatcher) -> None:
+    """Delete the exact clicked menu, acknowledge it, then route its callback as a message."""
+    if not callback.message or not callback.data:
+        await _safe_callback_answer(callback)
         return
+
+    # Acknowledge as early as possible. Previously this happened only after the
+    # delete-message API call, so a slow Telegram/API response could make the
+    # callback query expire before acknowledgement.
+    await _safe_callback_answer(callback)
 
     bot = callback.bot
     message = callback.message
@@ -125,8 +148,6 @@ async def _callback_bridge(callback: CallbackQuery, dispatcher: Dispatcher) -> N
             pass
         if _last_menu.get(key) == message.message_id:
             _last_menu.pop(key, None)
-
-    await callback.answer()
 
     synthetic_message = message.model_copy(
         update={"text": callback.data, "from_user": callback.from_user}
