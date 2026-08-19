@@ -9,7 +9,13 @@ def test_xui_menu_contains_all_controls():
     rows = getattr(markup, "keyboard", None) or getattr(markup, "inline_keyboard", None)
     assert rows is not None
     labels = {getattr(button, "text", "") for row in rows for button in row}
-    assert {"➕ Добавить 3X-UI", "📋 Список 3X-UI", "🧪 Проверить 3X-UI", "🗑 Удалить 3X-UI"} <= labels
+    assert {
+        "➕ Добавить 3X-UI",
+        "📋 Список 3X-UI",
+        "🧪 Проверить 3X-UI",
+        "🔍 Полная диагностика 3X-UI",
+        "🗑 Удалить 3X-UI",
+    } <= labels
 
 
 def test_xui_store_roundtrip(tmp_path: Path):
