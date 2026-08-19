@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from urllib.parse import urlparse
 
 from aiogram import F, Dispatcher
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
-from .xui_api_store import get, load, remove, upsert
+from .xui_api_store import load, remove, upsert
 from .xui_inbounds import XUIClient
 
 
@@ -52,6 +53,18 @@ def _safe_name(value: str) -> bool:
     return bool(re.fullmatch(r"[\w .:@/-]{1,80}", value, re.UNICODE))
 
 
+def _normalize_url(value: str) -> str:
+    value = value.strip().rstrip("/")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL должен начинаться с http:// или https:// и содержать адрес панели")
+    for suffix in ("/panel/api/inbounds/list", "/panel/api"):
+        if value.endswith(suffix):
+            value = value[: -len(suffix)].rstrip("/")
+            break
+    return value
+
+
 def install_xui_handlers(dp: Dispatcher) -> None:
     if getattr(dp, "_xfi_xui_ui_installed", False):
         return
@@ -80,16 +93,17 @@ def install_xui_handlers(dp: Dispatcher) -> None:
             return
         await state.update_data(name=name)
         await state.set_state(XUIStates.url)
-        await m.answer("Введите URL API 3X-UI, например https://panel.example.com")
+        await m.answer("Введите URL панели 3X-UI, например https://panel.example.com\nМожно вставить полный URL панели — /panel/api будет добавлен автоматически.")
 
     @dp.message(XUIStates.url)
     async def add_url(m, state: FSMContext):
         if not _admin(m): return
         if m.text in {"❌ Отмена", "⬅️ Главное меню"}:
             await state.clear(); await m.answer("Отменено.", reply_markup=xui_menu()); return
-        url = (m.text or "").strip().rstrip("/")
-        if not (url.startswith("https://") or url.startswith("http://")):
-            await m.answer("❌ URL должен начинаться с http:// или https://")
+        try:
+            url = _normalize_url(m.text or "")
+        except ValueError as exc:
+            await m.answer(f"❌ {exc}")
             return
         await state.update_data(url=url)
         await state.set_state(XUIStates.token)
@@ -104,13 +118,18 @@ def install_xui_handlers(dp: Dispatcher) -> None:
         token = "" if (m.text or "").strip() == "-" else (m.text or "").strip()
         try:
             item = upsert(data["name"], data["url"], token)
-            await asyncio.to_thread(_test_item, item)
+            result = await asyncio.to_thread(_test_item, item)
         except Exception as exc:
+            await state.clear()
             await m.answer(f"❌ Не удалось сохранить 3X-UI: {type(exc).__name__}: {exc}", reply_markup=xui_menu())
-            await state.clear(); return
+            return
         await state.clear()
+        if result["ok"]:
+            test_line = f"\n\n🟢 API доступен, inbounds: {result['count']}"
+        else:
+            test_line = f"\n\n🟠 Сохранено, но проверка API не прошла: {result['error']}"
         await m.answer(
-            f"✅ 3X-UI сохранён\n\nИмя: {item['name']}\nURL: {item['url']}\nToken: {_mask(item['token'])}",
+            f"✅ 3X-UI сохранён\n\nИмя: {item['name']}\nURL: {item['url']}\nToken: {_mask(item['token'])}{test_line}",
             reply_markup=xui_menu(),
         )
 
