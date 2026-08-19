@@ -4,6 +4,7 @@ import asyncio, ipaddress, json, os, subprocess, time
 from pathlib import Path
 from urllib import request
 from aiogram import F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
@@ -30,6 +31,20 @@ def _valid_ip(value):
 
 def _mask(key):
     return key[:4] + "…" + key[-4:] if len(key) >= 8 else "настроен"
+
+async def _safe_callback_answer(callback: CallbackQuery, text: str | None = None, *, show_alert: bool = False) -> bool:
+    """Answer a callback without letting an expired Telegram query break the handler."""
+    try:
+        if text is None:
+            await callback.answer()
+        else:
+            await callback.answer(text, show_alert=show_alert)
+        return True
+    except TelegramBadRequest as exc:
+        message = str(exc).lower()
+        if "query is too old" in message or "query id is invalid" in message or "response timeout expired" in message:
+            return False
+        raise
 
 def _ai_keyboard():
     return ReplyKeyboardMarkup(keyboard=[
@@ -61,42 +76,44 @@ def register_alert_callbacks(dp,admin_ids):
     @dp.callback_query(F.data.startswith("xfi:block:"))
     async def block_alert(callback:CallbackQuery):
         uid=callback.from_user.id if callback.from_user else 0
-        if uid not in admin_ids: await callback.answer("Нет доступа",show_alert=True); return
+        if uid not in admin_ids: await _safe_callback_answer(callback,"Нет доступа",show_alert=True); return
         ip=callback.data.split(":",2)[2].strip()
-        if not _valid_ip(ip): await callback.answer("Некорректный IP",show_alert=True); return
+        if not _valid_ip(ip): await _safe_callback_answer(callback,"Некорректный IP",show_alert=True); return
         alert=next((x for x in reversed(_load().get("alerts",[])) if x.get("ip")==ip),{})
         _pending[uid]=(ip,time.monotonic()+CONFIRM_TTL,alert.get("decision_id"))
         keyboard=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ ПОДТВЕРДИТЬ БЛОКИРОВКУ",callback_data="xfi:confirm")],[InlineKeyboardButton(text="❌ Отмена",callback_data="xfi:cancel")]])
-        await callback.answer(); await callback.message.answer(f"⚠️ Подтверждение защиты\n\nIP: {ip}\nDecision ID: {alert.get('decision_id','-')}\n\nПодтверждение действительно 2 минуты.",reply_markup=keyboard)
+        await _safe_callback_answer(callback); await callback.message.answer(f"⚠️ Подтверждение защиты\n\nIP: {ip}\nDecision ID: {alert.get('decision_id','-')}\n\nПодтверждение действительно 2 минуты.",reply_markup=keyboard)
 
     @dp.callback_query(F.data=="xfi:confirm")
     async def confirm_alert(callback:CallbackQuery):
         uid=callback.from_user.id if callback.from_user else 0
-        if uid not in admin_ids: await callback.answer("Нет доступа",show_alert=True); return
+        if uid not in admin_ids: await _safe_callback_answer(callback,"Нет доступа",show_alert=True); return
         pending=_pending.pop(uid,None)
-        if not pending or pending[1]<time.monotonic(): await callback.answer("Подтверждение истекло",show_alert=True); return
+        if not pending or pending[1]<time.monotonic(): await _safe_callback_answer(callback,"Подтверждение истекло",show_alert=True); return
         ip,_,decision_id=pending; alert=next((x for x in reversed(_load().get("alerts",[])) if x.get("ip")==ip),{})
         decision_id=decision_id or alert.get("decision_id")
         metadata={"decision_id":decision_id,"alert_id":alert.get("id"),"risk_score":alert.get("score"),"consensus":(alert.get("consensus") or {}).get("consensus"),"providers_used":(alert.get("consensus") or {}).get("providers_used")}
         try: ok,message=confirm_block(ip,actor=str(uid),reason="Security Monitor alert confirmed in Telegram",metadata=metadata)
         except (ValueError,OSError) as exc: ok,message=False,str(exc)
-        await callback.answer("Заблокировано" if ok else "Ошибка",show_alert=True); await callback.message.edit_reply_markup(reply_markup=None); await callback.message.answer(("🛡 IP заблокирован\n\n" if ok else "❌ Блокировка не выполнена\n\n")+f"{ip}\nDecision ID: {decision_id or '-'}\n{message}")
+        await _safe_callback_answer(callback,"Заблокировано" if ok else "Ошибка",show_alert=True); await callback.message.edit_reply_markup(reply_markup=None); await callback.message.answer(("🛡 IP заблокирован\n\n" if ok else "❌ Блокировка не выполнена\n\n")+f"{ip}\nDecision ID: {decision_id or '-'}\n{message}")
 
     @dp.callback_query(F.data=="xfi:cancel")
-    async def cancel_alert(callback:CallbackQuery): _pending.pop(callback.from_user.id if callback.from_user else 0,None); await callback.answer("Отменено"); await callback.message.edit_reply_markup(reply_markup=None)
+    async def cancel_alert(callback:CallbackQuery): _pending.pop(callback.from_user.id if callback.from_user else 0,None); await _safe_callback_answer(callback,"Отменено"); await callback.message.edit_reply_markup(reply_markup=None)
 
     @dp.callback_query(F.data.startswith("xfi:ignore:"))
     async def ignore_alert(callback:CallbackQuery):
-        if not callback.from_user or callback.from_user.id not in admin_ids: await callback.answer("Нет доступа",show_alert=True); return
-        await callback.answer("Угроза отмечена как просмотренная"); await callback.message.edit_reply_markup(reply_markup=None)
+        if not callback.from_user or callback.from_user.id not in admin_ids: await _safe_callback_answer(callback,"Нет доступа",show_alert=True); return
+        await _safe_callback_answer(callback,"Угроза отмечена как просмотренная"); await callback.message.edit_reply_markup(reply_markup=None)
 
     @dp.callback_query(F.data.startswith("xfi:detail:"))
     async def detail_alert(callback:CallbackQuery):
-        if not callback.from_user or callback.from_user.id not in admin_ids: await callback.answer("Нет доступа",show_alert=True); return
+        if not callback.from_user or callback.from_user.id not in admin_ids: await _safe_callback_answer(callback,"Нет доступа",show_alert=True); return
         alert_id=callback.data.split(":",2)[2]; alert=next((x for x in reversed(_load().get("alerts",[])) if x.get("id")==alert_id),None)
-        if not alert: await callback.answer("Тревога не найдена",show_alert=True); return
+        if not alert:
+            await _safe_callback_answer(callback,"Тревога не найдена",show_alert=True)
+            return
         decision=get_decision(alert.get("decision_id")) if alert.get("decision_id") else None
-        await callback.answer(); await callback.message.answer(json.dumps({"alert":alert,"ai_decision":decision},ensure_ascii=False,indent=2)[:3900])
+        await _safe_callback_answer(callback); await callback.message.answer(json.dumps({"alert":alert,"ai_decision":decision},ensure_ascii=False,indent=2)[:3900])
 
     @dp.message(F.text == "⬆️ Обновить XFI Guard")
     async def manual_update(message, state:FSMContext):
