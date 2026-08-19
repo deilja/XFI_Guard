@@ -12,6 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 from .ai_ui import install_ai_handlers
+from .openrouter_ui import install_openrouter_handlers
 from .alert_callbacks import register_alert_callbacks
 from .attack_surface import collect_attack_surface
 from .checks import collect_basic_checks
@@ -46,6 +47,7 @@ def build_dispatcher() -> Dispatcher:
     dp.callback_query.middleware(rate_limit)
     register_alert_callbacks(dp, ADMIN_IDS)
     install_ai_handlers(dp)
+    install_openrouter_handlers(dp)
     install_defense_handlers(dp)
 
     @dp.message(Command("start"))
@@ -122,7 +124,7 @@ def build_dispatcher() -> Dispatcher:
     @dp.message(F.text == "🤖 AI")
     async def ai_button(message):
         if admin(message):
-            await message.answer("🤖 Центр AI\n\nВыберите провайдера или действие ниже.", reply_markup=kb([["🟢 Gemini", "🔵 Groq"], ["🔀 Выбрать AI"], ["🔑 Ключ Gemini", "🔑 Ключ Groq"], ["🧠 Модель Gemini", "🧠 Модель Groq"], ["🧪 Проверить AI", "ℹ️ Статус AI"], ["⬅️ Главное меню"]]))
+            await message.answer("🤖 Центр AI\n\nВыберите провайдера или действие ниже.", reply_markup=kb([["🟢 Gemini", "🔵 Groq"], ["🟣 OpenRouter", "🔀 Выбрать AI"], ["🔑 Ключ Gemini", "🔑 Ключ Groq"], ["🧠 Модель Gemini", "🧠 Модель Groq"], ["🧪 Проверить AI", "ℹ️ Статус AI"], ["⬅️ Главное меню"]]))
 
     @dp.message(F.text == "🚫 Блокировка IP")
     async def block_button(message):
