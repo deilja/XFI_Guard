@@ -36,14 +36,12 @@ class XUIApiClient:
             self.web_base_path = f"/{self.web_base_path}"
         if self.web_base_path != "/":
             self.web_base_path = self.web_base_path.rstrip("/")
-
         self.token = token or os.getenv("XUI_TOKEN")
         self.username = username or os.getenv("XUI_USERNAME")
         self.password = password or os.getenv("XUI_PASSWORD")
         self.verify_ssl = verify_ssl
         self.timeout = timeout
         self.session = requests.Session()
-
         retry = Retry(
             total=2,
             connect=2,
@@ -55,7 +53,6 @@ class XUIApiClient:
         adapter = HTTPAdapter(max_retries=retry)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
-
         if self.token:
             self.session.headers["Authorization"] = f"Bearer {self.token}"
         self._logged_in = bool(self.token)
@@ -97,19 +94,11 @@ class XUIApiClient:
         if not self._logged_in and not self.login():
             return {"success": False, "msg": "auth failed"}
         try:
-            response = self.session.get(
-                self._url(path),
-                timeout=self.timeout,
-                verify=self.verify_ssl,
-            )
+            response = self.session.get(self._url(path), timeout=self.timeout, verify=self.verify_ssl)
             if response.status_code in (401, 403) and not self.token:
                 self._logged_in = False
                 if self.login():
-                    response = self.session.get(
-                        self._url(path),
-                        timeout=self.timeout,
-                        verify=self.verify_ssl,
-                    )
+                    response = self.session.get(self._url(path), timeout=self.timeout, verify=self.verify_ssl)
             return self._json(response)
         except requests.RequestException as exc:
             return {"success": False, "msg": str(exc)}
@@ -119,11 +108,33 @@ class XUIApiClient:
             return {"success": False, "msg": "auth failed"}
         try:
             response = self.session.post(
-                self._url(path),
-                json=json_data or {},
-                timeout=self.timeout,
-                verify=self.verify_ssl,
+                self._url(path), json=json_data or {}, timeout=self.timeout, verify=self.verify_ssl
             )
+            if response.status_code in (401, 403) and not self.token:
+                self._logged_in = False
+                if self.login():
+                    response = self.session.post(
+                        self._url(path), json=json_data or {}, timeout=self.timeout, verify=self.verify_ssl
+                    )
+            return self._json(response)
+        except requests.RequestException as exc:
+            return {"success": False, "msg": str(exc)}
+
+    def post_form(self, path: str, data: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """POST с form-urlencoded; используется для endpoints logs/xraylogs."""
+        if not self._logged_in and not self.login():
+            return {"success": False, "msg": "auth failed"}
+        payload = data or {}
+        try:
+            response = self.session.post(
+                self._url(path), data=payload, timeout=self.timeout, verify=self.verify_ssl
+            )
+            if response.status_code in (401, 403) and not self.token:
+                self._logged_in = False
+                if self.login():
+                    response = self.session.post(
+                        self._url(path), data=payload, timeout=self.timeout, verify=self.verify_ssl
+                    )
             return self._json(response)
         except requests.RequestException as exc:
             return {"success": False, "msg": str(exc)}
@@ -146,7 +157,6 @@ def _get_api_client() -> Optional[XUIApiClient]:
 
 
 def _xray_processes() -> list[str]:
-    """Возвращает реальные процессы Xray, в том числе запущенные 3X-UI."""
     code, stdout, _ = _run(["ps", "-eo", "pid=,comm=,args="])
     if code != 0:
         return []
@@ -192,7 +202,6 @@ def check_service_candidates(services: tuple[str, ...] = ("xray", "x-ui", "3x-ui
             raw.append((service, "critical", state))
         else:
             raw.append((service, "unknown", state or stderr.strip()))
-
     xray_runtime = bool(_xray_processes())
     panel_active = any(service in {"x-ui", "3x-ui"} and status == "ok" for service, status, _ in raw)
     results = []
@@ -216,9 +225,7 @@ def check_service_candidates(services: tuple[str, ...] = ("xray", "x-ui", "3x-ui
     return results
 
 
-def check_listening_ports(
-    ports: tuple[int, ...] = (22, 80, 443, 2053, 2083, 2087, 2096),
-) -> CheckResult:
+def check_listening_ports(ports: tuple[int, ...] = (22, 80, 443, 2053, 2083, 2087, 2096)) -> CheckResult:
     code, stdout, stderr = _run(["ss", "-lntup"])
     if code != 0:
         return CheckResult("network", "unknown", "Не удалось проверить открытые сетевые порты", {"output": stdout or stderr})
@@ -233,46 +240,22 @@ def check_listening_ports(
             match = re.search(r'users:\(\("([^"]+)"', line)
             process = match.group(1) if match else ""
             listeners.append({"port": int(port_text), "process": process, "line": line})
-    return CheckResult(
-        "network",
-        "ok",
-        f"Обнаружено {len(listeners)} отслеживаемых открытых портов",
-        {"listeners": listeners, "monitored_ports": list(ports)},
-    )
+    return CheckResult("network", "ok", f"Обнаружено {len(listeners)} отслеживаемых открытых портов", {"listeners": listeners, "monitored_ports": list(ports)})
 
 
 def check_api_server_status(client: Optional[XUIApiClient] = None) -> CheckResult:
-    """Статус сервера и Xray через /panel/api/server/status."""
     client = client or _get_api_client()
     if client is None:
         return CheckResult("api_server_status", "unknown", "XUI_HOST не задан — API-проверка пропущена", {})
-
     data = client.get("/panel/api/server/status")
     if not data.get("success"):
-        return CheckResult(
-            "api_server_status",
-            "critical",
-            f"API status недоступен: {data.get('msg', 'unknown error')}",
-            {"raw": data},
-        )
-
+        return CheckResult("api_server_status", "critical", f"API status недоступен: {data.get('msg', 'unknown error')}", {"raw": data})
     obj = data.get("obj") or {}
     xray = obj.get("xray") or {}
     state = str(xray.get("state") or "").lower()
     version = xray.get("version", "")
     error_msg = xray.get("errorMsg") or ""
-    details = {
-        "cpu": obj.get("cpu"),
-        "mem": obj.get("mem"),
-        "disk": obj.get("disk"),
-        "uptime": obj.get("uptime"),
-        "loads": obj.get("loads"),
-        "tcpCount": obj.get("tcpCount"),
-        "udpCount": obj.get("udpCount"),
-        "netIO": obj.get("netIO"),
-        "xray": xray,
-    }
-
+    details = {"cpu": obj.get("cpu"), "mem": obj.get("mem"), "disk": obj.get("disk"), "uptime": obj.get("uptime"), "loads": obj.get("loads"), "tcpCount": obj.get("tcpCount"), "udpCount": obj.get("udpCount"), "netIO": obj.get("netIO"), "xray": xray}
     if state == "running":
         return CheckResult("api_server_status", "ok", f"Xray running (API), version={version}", details)
     if state in {"stop", "stopped"}:
@@ -281,22 +264,14 @@ def check_api_server_status(client: Optional[XUIApiClient] = None) -> CheckResul
 
 
 def check_api_online_clients(client: Optional[XUIApiClient] = None) -> CheckResult:
-    """Количество online-клиентов через API 3X-UI."""
     client = client or _get_api_client()
     if client is None:
         return CheckResult("api_online_clients", "unknown", "XUI_HOST не задан — API-проверка пропущена", {})
-
     data = client.post("/panel/api/clients/onlines")
     if not data.get("success"):
         data = client.get("/panel/api/clients/onlines")
     if not data.get("success"):
-        return CheckResult(
-            "api_online_clients",
-            "warning",
-            f"Не удалось получить online-клиентов: {data.get('msg', 'error')}",
-            {"raw": data},
-        )
-
+        return CheckResult("api_online_clients", "warning", f"Не удалось получить online-клиентов: {data.get('msg', 'error')}", {"raw": data})
     online = data.get("obj") or []
     if isinstance(online, dict):
         online = list(online.keys())
@@ -305,52 +280,161 @@ def check_api_online_clients(client: Optional[XUIApiClient] = None) -> CheckResu
 
 
 def check_api_inbounds_summary(client: Optional[XUIApiClient] = None) -> CheckResult:
-    """Краткая сводка по inbounds: total/enabled и типы протоколов."""
     client = client or _get_api_client()
     if client is None:
         return CheckResult("api_inbounds", "unknown", "XUI_HOST не задан — API-проверка пропущена", {})
-
     data = client.get("/panel/api/inbounds/list")
     if not data.get("success"):
-        return CheckResult(
-            "api_inbounds",
-            "warning",
-            f"Не удалось получить inbounds: {data.get('msg', 'error')}",
-            {"raw": data},
-        )
-
+        return CheckResult("api_inbounds", "warning", f"Не удалось получить inbounds: {data.get('msg', 'error')}", {"raw": data})
     inbounds = data.get("obj") or []
     if not isinstance(inbounds, list):
         return CheckResult("api_inbounds", "warning", "API вернул некорректный список inbounds", {"raw": data})
-
     total = len(inbounds)
     enabled = sum(1 for item in inbounds if item.get("enable"))
     protocols: dict[str, int] = {}
     for item in inbounds:
         protocol = str(item.get("protocol") or "unknown").lower()
         protocols[protocol] = protocols.get(protocol, 0) + 1
+    return CheckResult("api_inbounds", "ok", f"Inbounds: {enabled}/{total} enabled", {"total": total, "enabled": enabled, "protocols": protocols})
 
-    return CheckResult(
-        "api_inbounds",
-        "ok",
-        f"Inbounds: {enabled}/{total} enabled",
-        {"total": total, "enabled": enabled, "protocols": protocols},
-    )
+
+_XRAY_ERROR_RE = re.compile(r"(?i)(error|fatal|panic|failed|exception|cannot|unable|refused|timeout|denied)")
+_XRAY_WARN_RE = re.compile(r"(?i)(warning|warn|deprecated)")
+
+
+def check_api_xray_logs(
+    client: Optional[XUIApiClient] = None,
+    count: int = 100,
+    filter_text: str = "",
+) -> CheckResult:
+    """Проверяет последние Xray access/log записи через 3X-UI API."""
+    client = client or _get_api_client()
+    if client is None:
+        return CheckResult("api_xray_logs", "unknown", "XUI_HOST не задан — API-проверка логов пропущена", {})
+    count = max(1, min(int(count), 1000))
+    form = {"showDirect": "true", "showBlocked": "true", "showProxy": "true"}
+    if filter_text:
+        form["filter"] = filter_text
+    data = client.post_form(f"/panel/api/server/xraylogs/{count}", form)
+    if not data.get("success"):
+        return CheckResult("api_xray_logs", "warning", f"Не удалось получить xraylogs: {data.get('msg', 'error')}", {"raw": data})
+    entries = data.get("obj") or []
+    if not isinstance(entries, list):
+        entries = []
+    errors: list[str] = []
+    warnings: list[str] = []
+    sample: list[Any] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            text = " ".join(str(v) for v in entry.values())
+            sample.append(entry)
+        else:
+            text = str(entry)
+            sample.append(text)
+        if _XRAY_ERROR_RE.search(text):
+            errors.append(text[:300])
+        elif _XRAY_WARN_RE.search(text):
+            warnings.append(text[:300])
+    details = {"total_entries": len(entries), "errors_count": len(errors), "warnings_count": len(warnings), "errors": errors[:10], "warnings": warnings[:10], "sample": sample[:5]}
+    if errors:
+        return CheckResult("api_xray_logs", "critical", f"В логах Xray найдено {len(errors)} ошибок (из {len(entries)} записей)", details)
+    if warnings:
+        return CheckResult("api_xray_logs", "warning", f"В логах Xray найдено {len(warnings)} предупреждений (из {len(entries)} записей)", details)
+    return CheckResult("api_xray_logs", "ok", f"Логи Xray без ошибок ({len(entries)} записей)", details)
+
+
+def check_api_panel_logs(
+    client: Optional[XUIApiClient] = None,
+    count: int = 80,
+    level: str = "warning",
+) -> CheckResult:
+    """Проверяет логи панели 3X-UI через POST /panel/api/server/logs/{count}."""
+    client = client or _get_api_client()
+    if client is None:
+        return CheckResult("api_panel_logs", "unknown", "XUI_HOST не задан — API-проверка логов пропущена", {})
+    count = max(1, min(int(count), 1000))
+    allowed_levels = {"debug", "info", "notice", "warning", "error"}
+    level = level.lower() if level.lower() in allowed_levels else "warning"
+    data = client.post_form(f"/panel/api/server/logs/{count}", {"level": level, "syslog": "false"})
+    if not data.get("success"):
+        return CheckResult("api_panel_logs", "warning", f"Не удалось получить panel logs: {data.get('msg', 'error')}", {"raw": data})
+    lines = data.get("obj") or []
+    if not isinstance(lines, list):
+        lines = [str(lines)]
+    errors: list[str] = []
+    warnings: list[str] = []
+    xray_related: list[str] = []
+    for line in lines:
+        text = str(line)
+        if "xray" in text.lower():
+            xray_related.append(text[:300])
+        if _XRAY_ERROR_RE.search(text):
+            errors.append(text[:300])
+        elif _XRAY_WARN_RE.search(text):
+            warnings.append(text[:300])
+    details = {"total_lines": len(lines), "errors_count": len(errors), "warnings_count": len(warnings), "xray_related_count": len(xray_related), "errors": errors[:10], "warnings": warnings[:10], "xray_sample": xray_related[:5]}
+    if errors:
+        return CheckResult("api_panel_logs", "critical", f"В логах панели найдено {len(errors)} ошибок (level≥{level})", details)
+    if warnings:
+        return CheckResult("api_panel_logs", "warning", f"В логах панели найдено {len(warnings)} предупреждений", details)
+    return CheckResult("api_panel_logs", "ok", f"Логи панели без ошибок ({len(lines)} строк, level={level})", details)
+
+
+def check_local_xray_logs(
+    log_paths: tuple[str, ...] = (
+        "/var/log/x-ui/xray.log",
+        "/var/log/xray/access.log",
+        "/usr/local/x-ui/bin/access.log",
+        "/usr/local/x-ui/bin/error.log",
+        "./access.log",
+    ),
+    tail_lines: int = 100,
+) -> CheckResult:
+    """Читает последние строки локальных логов Xray как fallback."""
+    found_path = None
+    content = ""
+    tail_lines = max(1, min(int(tail_lines), 2000))
+    for path in log_paths:
+        if os.path.isfile(path):
+            found_path = path
+            try:
+                code, stdout, _ = _run(["tail", "-n", str(tail_lines), path])
+                if code == 0:
+                    content = stdout
+                    break
+            except Exception:
+                continue
+    if not found_path or not content:
+        return CheckResult("local_xray_logs", "unknown", "Локальные логи Xray не найдены", {"tried_paths": list(log_paths)})
+    lines = content.splitlines()
+    errors = [ln[:300] for ln in lines if _XRAY_ERROR_RE.search(ln)]
+    warnings = [ln[:300] for ln in lines if _XRAY_WARN_RE.search(ln)]
+    details = {"path": found_path, "lines": len(lines), "errors_count": len(errors), "warnings_count": len(warnings), "errors": errors[:10], "warnings": warnings[:10]}
+    if errors:
+        return CheckResult("local_xray_logs", "critical", f"В {found_path} найдено {len(errors)} ошибок", details)
+    if warnings:
+        return CheckResult("local_xray_logs", "warning", f"В {found_path} найдено {len(warnings)} предупреждений", details)
+    return CheckResult("local_xray_logs", "ok", f"Локальные логи Xray без ошибок ({found_path})", details)
 
 
 def collect_vpn_checks(
     include_api: bool = True,
+    include_logs: bool = True,
+    include_local_log_fallback: bool = True,
     ports: tuple[int, ...] = (22, 80, 443, 2053, 2083, 2087, 2096),
 ) -> list[CheckResult]:
-    """Собирает локальные проверки и, при необходимости, API 3X-UI."""
+    """Собирает локальные проверки, API 3X-UI и проверки логов."""
     results: list[CheckResult] = [check_panel_service(), check_xray_runtime()]
     results.extend(check_service_candidates())
     results.append(check_listening_ports(ports))
-
     if include_api:
         client = _get_api_client()
         results.append(check_api_server_status(client))
         results.append(check_api_online_clients(client))
         results.append(check_api_inbounds_summary(client))
-
+        if include_logs:
+            results.append(check_api_xray_logs(client))
+            results.append(check_api_panel_logs(client))
+    if include_local_log_fallback:
+        results.append(check_local_xray_logs())
     return results
