@@ -10,7 +10,7 @@ from .ai_config import AISettings
 DEFAULT_PATH = "/var/lib/xfi-guard/ai.json"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
-DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-20b"
+DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 
 
 def load(path: str = DEFAULT_PATH) -> dict:
