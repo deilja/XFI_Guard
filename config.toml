@@ -21,7 +21,14 @@ max_events_per_cycle = 100
 enabled = false
 cooldown_seconds = 300
 
-[gemini]
-enabled = false
-model = "gemini-2.5-pro"
+[ai]
+provider = "gemini"
 max_events_per_cycle = 10
+
+[auto_block]
+# Automatic blocking requires >= 5 fresh SSH failures from the same public IP,
+# AI high/critical consensus and confidence >= 0.90.
+enabled = true
+confidence = 0.90
+min_attempts = 5
+db = "/var/lib/xfi-guard/security.db"
