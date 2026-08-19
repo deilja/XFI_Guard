@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .ai_decision import get as get_decision
 from .auto_defense import confirm_block
 from .ai_store import load as load_ai, save as save_ai
+from .rate_limit import RateLimitMiddleware
 
 STATE_FILE=Path("/var/lib/xfi-guard/security_monitor.json")
 _pending={}; CONFIRM_TTL=120
@@ -58,6 +59,12 @@ def _fetch_openrouter_models(key):
     return sorted(set(models))
 
 def register_alert_callbacks(dp,admin_ids):
+    # Protect both message and callback observers. The limit is deliberately small
+    # because these handlers can trigger UFW changes or expensive AI requests.
+    limiter = RateLimitMiddleware(rate=2.0, burst=2)
+    dp.message.middleware(limiter)
+    dp.callback_query.middleware(RateLimitMiddleware(rate=1.0, burst=1))
+
     @dp.callback_query(F.data.startswith("xfi:block:"))
     async def block_alert(callback:CallbackQuery):
         uid=callback.from_user.id if callback.from_user else 0
