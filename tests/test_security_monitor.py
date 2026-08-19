@@ -12,3 +12,22 @@ def test_scan_only_alerts_new_or_elevated(monkeypatch, tmp_path):
     second = security_monitor.scan_once()
     assert len(first["alerts"]) == 1
     assert len(second["alerts"]) == 0
+
+
+def test_run_forever_baselines_without_startup_notification(monkeypatch):
+    calls = []
+
+    def fake_scan_once(**kwargs):
+        calls.append(kwargs)
+        return {"alerts": []}
+
+    monkeypatch.setattr(security_monitor, "scan_once", fake_scan_once)
+    monkeypatch.setattr(security_monitor.time, "sleep", lambda _: (_ for _ in ()).throw(StopIteration))
+
+    try:
+        security_monitor.run_forever(interval=300, threshold=60)
+    except StopIteration:
+        pass
+
+    assert calls[0] == {"threshold": 60, "notify": False}
+    assert calls[1] == {"threshold": 60, "notify": True}
