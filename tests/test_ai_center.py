@@ -2,7 +2,8 @@ from xfi_guard.ai_center import ai_center_menu, build_health_report, consensus_r
 
 
 def _labels(markup):
-    return [button.text for row in markup.keyboard for button in row]
+    rows = getattr(markup, "keyboard", None) or getattr(markup, "inline_keyboard", None) or []
+    return [button.text for row in rows for button in row]
 
 
 def test_ai_center_menu_contains_health_and_sync_controls():
