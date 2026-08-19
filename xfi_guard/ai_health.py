@@ -31,7 +31,10 @@ def run_health_check():
         for model in models:
             started=time.monotonic(); ok=False; err=""
             try:
-                text=analyzer._chat_model(provider,model,'Return ONLY JSON: {"risk":"low","confidence":0.1,"reason":"healthcheck"}',True); ok=bool(text); err=analyzer.last_error
+                # Health checks must bypass the normal provider cooldown. Otherwise a
+                # failed provider can never recover because every scheduled probe is
+                # rejected before it reaches the API.
+                text=analyzer._chat_model(provider,model,'Return ONLY JSON: {"risk":"low","confidence":0.1,"reason":"healthcheck"}',True,force=True); ok=bool(text); err=analyzer.last_error
             except Exception as exc: err=f"{type(exc).__name__}: {exc}"
             latency=round((time.monotonic()-started)*1000,1); record(provider,model,ok,latency,err); results.append({"provider":provider,"model":model,"ok":ok,"latency_ms":latency,"error":err})
     return {"results":results,"weights":adapt_weights(),"timestamp":datetime.now(timezone.utc).isoformat()}
