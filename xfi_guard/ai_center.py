@@ -29,7 +29,7 @@ def ai_center_menu():
     return _kb([
         ["🩺 Здоровье AI", "🔄 Синхронизация AI"],
         ["📊 Консенсус AI", "🧹 Сброс здоровья AI"],
-        ["⬅️ AI"],
+        ["⬅️ Главное меню"],
     ])
 
 
@@ -92,7 +92,7 @@ def install_ai_center_handlers(dp: Dispatcher) -> None:
             return
         try:
             analyzer = AIAnalyzer()
-            cfg = analyzer.sync()
+            analyzer.sync()
             status = analyzer.status()
             save({**load(), "provider": status["selected_provider"], "openrouter_model": status["openrouter_model"], "openrouter_models": tuple(status["openrouter_models"])})
             await m.answer(
@@ -118,8 +118,3 @@ def install_ai_center_handlers(dp: Dispatcher) -> None:
         analyzer = AIAnalyzer()
         analyzer.reset_health()
         await m.answer("🧹 Локальные cooldown/failure-состояния AI сброшены.", reply_markup=ai_center_menu())
-
-    @dp.message(F.text == "⬅️ AI")
-    async def back_ai(m):
-        if _admin(m):
-            await m.answer("🤖 Центр AI", reply_markup=ai_center_menu())
