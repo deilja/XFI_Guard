@@ -52,19 +52,21 @@ def write_snapshot(path: str, snapshot: list[dict], events: list[dict] | None = 
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _alert_keyboard(ip: str, alert_id: str | None = None) -> list[list[dict]]:
+def _alert_keyboard(ip: str) -> list[list[dict]]:
     """Keyboard consumed by xfi_guard.alert_callbacks."""
-    rows = [[{"text": "🚫 Заблокировать IP", "callback_data": f"xfi:block:{ip}"},
-             {"text": "⚠️ Игнорировать", "callback_data": f"xfi:ignore:{ip}"}]]
-    if alert_id:
-        rows.append([{"text": "📋 Посмотреть логи", "callback_data": f"xfi:detail:{alert_id}"}])
-    return rows
+    return [
+        [
+            {"text": "🚫 Заблокировать IP", "callback_data": f"xfi:block:{ip}"},
+            {"text": "⚠️ Игнорировать", "callback_data": f"xfi:ignore:{ip}"},
+        ],
+        [{"text": "📋 Посмотреть логи", "callback_data": f"xfi:detail:{ip}"}],
+    ]
 
 
 def _notify_auto_blocks(results: list[dict]) -> None:
     for item in results:
         ip = str(item.get("ip", ""))
-        keyboard = _alert_keyboard(ip, item.get("alert_id")) if ip else None
+        keyboard = _alert_keyboard(ip) if ip else None
         if item.get("action") == "blocked":
             notify(
                 "🚨 XFI Guard — АВТОБЛОКИРОВКА\n\n"
