@@ -52,23 +52,50 @@ def write_snapshot(path: str, snapshot: list[dict], events: list[dict] | None = 
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _alert_keyboard(ip: str, alert_id: str | None = None) -> list[list[dict]]:
+    """Keyboard consumed by xfi_guard.alert_callbacks."""
+    rows = [[{"text": "🚫 Заблокировать IP", "callback_data": f"xfi:block:{ip}"},
+             {"text": "⚠️ Игнорировать", "callback_data": f"xfi:ignore:{ip}"}]]
+    if alert_id:
+        rows.append([{"text": "📋 Посмотреть логи", "callback_data": f"xfi:detail:{alert_id}"}])
+    return rows
+
+
 def _notify_auto_blocks(results: list[dict]) -> None:
     for item in results:
+        ip = str(item.get("ip", ""))
+        keyboard = _alert_keyboard(ip, item.get("alert_id")) if ip else None
         if item.get("action") == "blocked":
             notify(
                 "🚨 XFI Guard — АВТОБЛОКИРОВКА\n\n"
-                f"IP: {item['ip']}\n"
+                f"IP: {ip}\n"
                 f"Причина: SSH brute-force\n"
                 f"Попыток: {item['attempts']}\n"
                 f"Уровень: {str(item['risk']).upper()}\n"
-                f"Уверенность AI: {item['confidence']:.0%}\n\n"
+                f"Уверенность AI: {item['confidence']:.0%}\n"
+                f"AI providers: {', '.join(item.get('providers', [])) or '—'}\n\n"
                 f"{item.get('message', 'IP автоматически заблокирован UFW.')}"
+                , keyboard=keyboard
             )
         elif item.get("action") == "block_failed":
             notify(
                 "⚠️ XFI Guard — автоматическая блокировка не выполнена\n\n"
-                f"IP: {item['ip']}\n"
+                f"IP: {ip}\n"
+                f"Уровень: {str(item.get('risk', 'unknown')).upper()}\n"
+                f"Уверенность AI: {float(item.get('confidence', 0)):.0%}\n\n"
                 f"Причина: {item.get('message', 'ошибка UFW')}"
+                , keyboard=keyboard
+            )
+        elif item.get("action") == "none" and str(item.get("risk", "")).lower() in {"high", "critical"}:
+            notify(
+                "🚨 XFI Guard — требуется решение администратора\n\n"
+                f"IP: {ip}\n"
+                f"Попыток: {item.get('attempts', 0)}\n"
+                f"Уровень: {str(item.get('risk')).upper()}\n"
+                f"Уверенность AI: {float(item.get('confidence', 0)):.0%}\n"
+                f"AI providers: {', '.join(item.get('providers', [])) or '—'}\n\n"
+                f"{item.get('reason', 'AI обнаружил подозрительную активность.')}"
+                , keyboard=keyboard
             )
 
 
