@@ -33,8 +33,16 @@ def scan_once(threshold=60,max_ips=5,notify=True):
         if notify: send_alert(alert)
     state["alerts"]=(state.get("alerts",[])+alerts)[-200:]; state["updated_at"]=datetime.now(timezone.utc).isoformat(); _save(state); return {"alerts":alerts,"active_count":surface.get("active_count",0),"scanned":len(surface.get("ips",[]))}
 def run_forever(interval=300,threshold=60):
+    # Establish a durable baseline after every process/host restart. Existing
+    # threats are recorded but are not re-notified just because the service
+    # started again. New threats or a significant risk increase are still
+    # reported by the normal scan loop.
+    try:
+        scan_once(threshold=threshold, notify=False)
+    except Exception as exc:
+        data=_load(); data.setdefault("alerts",[]).append({"timestamp":datetime.now(timezone.utc).isoformat(),"error":f"startup baseline: {type(exc).__name__}: {exc}"}); data["alerts"]=data["alerts"][-200:]; _save(data)
     while True:
-        try: scan_once(threshold=threshold)
+        try: scan_once(threshold=threshold, notify=True)
         except Exception as exc:
             data=_load(); data.setdefault("alerts",[]).append({"timestamp":datetime.now(timezone.utc).isoformat(),"error":f"{type(exc).__name__}: {exc}"}); data["alerts"]=data["alerts"][-200:]; _save(data)
         time.sleep(max(30,interval))
