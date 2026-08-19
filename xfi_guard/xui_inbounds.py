@@ -12,6 +12,7 @@ class XUIClient:
             with request.urlopen(req,timeout=self.timeout) as r:return r.status,json.loads(r.read().decode())
         except error.HTTPError as e:return e.code,{'success':False,'msg':'HTTP error'}
     def list_inbounds(self): return self._request('GET','/panel/api/inbounds/list')
+    def get_server_status(self): return self._request('GET','/panel/api/server/status')
     def get_inbound(self,inbound_id): return self._request('GET',f'/panel/api/inbounds/get/{int(inbound_id)}')
     def add_inbound(self,payload): return self._request('POST','/panel/api/inbounds/add',payload)
     def update_inbound(self,inbound_id,payload): return self._request('POST',f'/panel/api/inbounds/update/{int(inbound_id)}',payload)
