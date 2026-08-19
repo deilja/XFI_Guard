@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# Local/runtime state
+.env
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Build artifacts
+build/
+dist/
+backup/
