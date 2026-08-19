@@ -13,6 +13,7 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 from .ai_ui import install_ai_handlers
 from .openrouter_ui import install_openrouter_handlers
+from .xui_ui import install_xui_handlers
 from .alert_callbacks import register_alert_callbacks
 from .attack_surface import collect_attack_surface
 from .checks import collect_basic_checks
@@ -33,7 +34,7 @@ def kb(rows: list[list[str]]) -> ReplyKeyboardMarkup:
 
 
 def main_kb() -> ReplyKeyboardMarkup:
-    return kb([["📊 Статус", "🔐 Безопасность"], ["🛡 Fail2Ban", "🔥 UFW"], ["🌐 VPN/Xray", "📋 События"], ["🛡 Картина атак", "🤖 AI"], ["🧠 Security Brain", "🚫 Блокировка IP"], ["🔄 Проверить сейчас"], ["🔄 Обновить XFI Guard", "⚡ Принудительное обновление"], ["❓ Помощь"]])
+    return kb([["📊 Статус", "🔐 Безопасность"], ["🛡 Fail2Ban", "🔥 UFW"], ["🌐 VPN/Xray", "📋 События"], ["⚙️ 3X-UI", "🤖 AI"], ["🛡 Картина атак", "🧠 Security Brain"], ["🚫 Блокировка IP"], ["🔄 Проверить сейчас"], ["🔄 Обновить XFI Guard", "⚡ Принудительное обновление"], ["❓ Помощь"]])
 
 
 def results(items) -> str:
@@ -48,6 +49,7 @@ def build_dispatcher() -> Dispatcher:
     register_alert_callbacks(dp, ADMIN_IDS)
     install_ai_handlers(dp)
     install_openrouter_handlers(dp)
+    install_xui_handlers(dp)
     install_defense_handlers(dp)
 
     @dp.message(Command("start"))
@@ -87,6 +89,17 @@ def build_dispatcher() -> Dispatcher:
         if admin(message):
             await message.answer("🌐 VPN/Xray\n\n" + results(collect_vpn_checks()), reply_markup=main_kb())
 
+    @dp.message(F.text == "📋 События")
+    async def events_button(message):
+        if not admin(message):
+            return
+        try:
+            p = subprocess.run(["journalctl", "-u", "xfi-guard", "-u", "xfi-guard-bot", "-n", "40", "--no-pager"], text=True, capture_output=True, timeout=8, check=False)
+            text = (p.stdout or p.stderr).strip()[-3600:] or "Событий нет."
+        except Exception as exc:
+            text = f"❌ Не удалось получить события: {type(exc).__name__}: {exc}"
+        await message.answer("📋 Последние события\n\n" + text, reply_markup=main_kb())
+
     @dp.message(F.text == "🛡 Картина атак")
     async def attack_surface_button(message):
         if not admin(message):
@@ -125,17 +138,8 @@ def build_dispatcher() -> Dispatcher:
     async def force_update_button(message):
         if not admin(message):
             return
-        await message.answer(
-            "⚠️ Принудительное обновление XFI Guard\n\n"
-            "Будет заново установлен текущий origin/main, даже если SHA совпадает.\n"
-            "Перед заменой создаётся точка отката, после установки выполняется проверка бота."
-        )
-        subprocess.Popen(
-            ["/opt/xfi-guard/.venv/bin/python", "-m", "xfi_guard.force_update"],
-            cwd="/opt/xfi-guard",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        await message.answer("⚠️ Принудительное обновление XFI Guard\n\nБудет заново установлен текущий origin/main, даже если SHA совпадает.\nПеред заменой создаётся точка отката, после установки выполняется проверка бота.")
+        subprocess.Popen(["/opt/xfi-guard/.venv/bin/python", "-m", "xfi_guard.force_update"], cwd="/opt/xfi-guard", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     @dp.message(Command("force_update"))
     async def force_update_command(message):
