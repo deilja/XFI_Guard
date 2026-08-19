@@ -1,0 +1,20 @@
+[Unit]
+Description=XFI Guard Telegram Webhook
+After=network-online.target xfi-guard.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/xfi-guard
+EnvironmentFile=-/etc/xfi-guard/bot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.webhook
+Restart=always
+RestartSec=5
+PrivateTmp=false
+ProtectSystem=off
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

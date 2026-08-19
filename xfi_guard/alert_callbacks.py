@@ -10,8 +10,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from .ai_decision import get as get_decision
 from .auto_defense import confirm_block
 from .ai_store import load as load_ai, save as save_ai
+from .rate_limit import RateLimitMiddleware
 
 STATE_FILE=Path("/var/lib/xfi-guard/security_monitor.json")
+MONITOR_LOG=Path("/var/log/xfi-guard/monitor.jsonl")
 _pending={}; CONFIRM_TTL=120
 
 class OpenRouterStates(StatesGroup):
@@ -57,7 +59,17 @@ def _fetch_openrouter_models(key):
             models.append(mid)
     return sorted(set(models))
 
+def _recent_logs_for_ip(ip: str, limit: int = 12) -> list[str]:
+    try:
+        lines=MONITOR_LOG.read_text(encoding="utf-8",errors="replace").splitlines()[-500:]
+    except OSError:
+        return []
+    return [line[:700] for line in lines if ip in line][-limit:]
+
 def register_alert_callbacks(dp,admin_ids):
+    dp.message.middleware(RateLimitMiddleware(rate=2.0, burst=2))
+    dp.callback_query.middleware(RateLimitMiddleware(rate=1.0, burst=1))
+
     @dp.callback_query(F.data.startswith("xfi:block:"))
     async def block_alert(callback:CallbackQuery):
         uid=callback.from_user.id if callback.from_user else 0
@@ -93,7 +105,12 @@ def register_alert_callbacks(dp,admin_ids):
     @dp.callback_query(F.data.startswith("xfi:detail:"))
     async def detail_alert(callback:CallbackQuery):
         if not callback.from_user or callback.from_user.id not in admin_ids: await callback.answer("Нет доступа",show_alert=True); return
-        alert_id=callback.data.split(":",2)[2]; alert=next((x for x in reversed(_load().get("alerts",[])) if x.get("id")==alert_id),None)
+        value=callback.data.split(":",2)[2].strip()
+        if _valid_ip(value):
+            logs=_recent_logs_for_ip(value)
+            text=f"📋 Логи XFI Guard для {value}\n\n" + ("\n".join(logs) if logs else "Для этого IP свежих записей в monitor.jsonl не найдено.")
+            await callback.answer(); await callback.message.answer(text[:3900]); return
+        alert=next((x for x in reversed(_load().get("alerts",[])) if x.get("id")==value),None)
         if not alert: await callback.answer("Тревога не найдена",show_alert=True); return
         decision=get_decision(alert.get("decision_id")) if alert.get("decision_id") else None
         await callback.answer(); await callback.message.answer(json.dumps({"alert":alert,"ai_decision":decision},ensure_ascii=False,indent=2)[:3900])
@@ -112,7 +129,6 @@ def register_alert_callbacks(dp,admin_ids):
         except Exception as exc:
             await message.answer(f"❌ Ошибка запуска обновления: {type(exc).__name__}: {exc}", reply_markup=_ai_keyboard())
 
-    # OpenRouter controls are registered here because bot.py already calls this function.
     @dp.message(F.text == "🟣 OpenRouter")
     async def openrouter_provider(message, state:FSMContext):
         if not message.from_user or message.from_user.id not in admin_ids: return
