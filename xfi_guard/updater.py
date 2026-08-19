@@ -12,7 +12,6 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from urllib.parse import urljoin
 
 REPO = Path(os.getenv("XFI_GUARD_REPO", "/opt/xfi-guard"))
 SERVICE = os.getenv("XFI_GUARD_SERVICE", "xfi-guard-bot")
@@ -51,8 +50,6 @@ def telegram_api_base() -> str:
         return "https://api.telegram.org/"
     if value.startswith(("https://", "http://")):
         return value.rstrip("/") + "/"
-    # Старые конфигурации иногда ошибочно содержали bot-token вместо URL.
-    # В таком случае безопасно используем официальный Telegram API.
     print("Некорректный XFI_GUARD_TELEGRAM_API_URL; используется https://api.telegram.org/", file=sys.stderr)
     return "https://api.telegram.org/"
 
@@ -74,7 +71,7 @@ def notify(text: str, keyboard: list[list[dict]] | None = None) -> bool:
         print("Telegram notification skipped: XFI_GUARD_BOT_TOKEN/XFI_GUARD_ADMIN_IDS not configured", file=sys.stderr)
         return False
     base = telegram_api_base()
-    endpoint = urljoin(base, f"bot{token}/sendMessage")
+    endpoint = f"{base.rstrip('/')}/bot{token}/sendMessage"
     ok = True
     for chat_id in admin_ids:
         payload: dict[str, object] = {"chat_id": int(chat_id), "text": text}
@@ -108,14 +105,9 @@ def local_head() -> str:
 
 
 def worktree_clean() -> bool:
-    """Tracked-изменения блокируют обновление; build/cache/backup игнорируются."""
     result = run("git", "status", "--porcelain", check=True).stdout.splitlines()
     ignored_untracked_prefixes = (
-        "?? build/",
-        "?? xfi_guard.egg-info/",
-        "?? xfi_guard/__pycache__/",
-        "?? backup/",
-        "?? .pytest_cache/",
+        "?? build/", "?? xfi_guard.egg-info/", "?? xfi_guard/__pycache__/", "?? backup/", "?? .pytest_cache/",
     )
     ignored_untracked_suffixes = (".bak", ".pyc")
     for line in result:
@@ -130,37 +122,28 @@ def worktree_clean() -> bool:
 def acquire_lock() -> bool:
     try:
         fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
+        os.write(fd, str(os.getpid()).encode()); os.close(fd); return True
     except FileExistsError:
         return False
 
 
 def release_lock() -> None:
-    try:
-        LOCK_FILE.unlink()
-    except FileNotFoundError:
-        pass
+    try: LOCK_FILE.unlink()
+    except FileNotFoundError: pass
 
 
 def read_notified() -> str:
-    try:
-        return NOTIFIED_FILE.read_text().strip()
-    except FileNotFoundError:
-        return ""
+    try: return NOTIFIED_FILE.read_text().strip()
+    except FileNotFoundError: return ""
 
 
 def write_notified(value: str) -> None:
-    NOTIFIED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    NOTIFIED_FILE.write_text(value + "\n")
+    NOTIFIED_FILE.parent.mkdir(parents=True, exist_ok=True); NOTIFIED_FILE.write_text(value + "\n")
 
 
 def clear_notified() -> None:
-    try:
-        NOTIFIED_FILE.unlink()
-    except FileNotFoundError:
-        pass
+    try: NOTIFIED_FILE.unlink()
+    except FileNotFoundError: pass
 
 
 def bot_healthy(wait: int = 30) -> bool:
@@ -169,25 +152,21 @@ def bot_healthy(wait: int = 30) -> bool:
         status = subprocess.run(["systemctl", "is-active", SERVICE], text=True, capture_output=True).stdout.strip()
         if status == "active":
             logs = subprocess.run(["journalctl", "-u", SERVICE, "-n", "80", "--no-pager", "-o", "cat"], text=True, capture_output=True).stdout
-            if "polling запущен" in logs or "polling" in logs.lower():
-                return True
+            if "polling запущен" in logs or "polling" in logs.lower(): return True
         time.sleep(2)
     return False
 
 
 def validate() -> None:
     py = REPO / ".venv/bin/python"
-    if not py.exists():
-        raise RuntimeError(f"Не найден Python venv: {py}")
+    if not py.exists(): raise RuntimeError(f"Не найден Python venv: {py}")
     run(str(py), "-m", "compileall", "-q", "xfi_guard", timeout=120)
     probe = run(str(py), "-c", "import xfi_guard.bot; print('IMPORT_OK')", timeout=30)
-    if "IMPORT_OK" not in probe.stdout:
-        raise RuntimeError("Не удалось импортировать xfi_guard.bot")
+    if "IMPORT_OK" not in probe.stdout: raise RuntimeError("Не удалось импортировать xfi_guard.bot")
 
 
 def check_update() -> int:
-    if not acquire_lock():
-        return 0
+    if not acquire_lock(): return 0
     try:
         current = local_head(); remote = github_head()
         if current == remote:
@@ -195,51 +174,35 @@ def check_update() -> int:
         if read_notified() == remote: return 0
         text = f"🆕 Доступно обновление XFI Guard\n\nТекущая версия: {current[:8]}\nНовая версия: {remote[:8]}\n\nНажмите кнопку для установки."
         if notify(text, [[{"text": "⬆️ Обновить XFI Guard", "callback_data": "xfi_update"}]]): write_notified(remote)
-        _write_status("доступно", text, current, remote)
-        print(f"Update available: {current} -> {remote}")
-        return 0
+        _write_status("доступно", text, current, remote); print(f"Update available: {current} -> {remote}"); return 0
     except Exception as exc:
         _write_status("ошибка", str(exc)); print(f"Update check failed: {type(exc).__name__}: {exc}", file=sys.stderr); return 1
     finally: release_lock()
 
 
 def apply_update() -> int:
-    if not acquire_lock():
-        notify("⚠️ Обновление XFI Guard уже выполняется."); return 2
+    if not acquire_lock(): notify("⚠️ Обновление XFI Guard уже выполняется."); return 2
     old = ""
     try:
-        if not worktree_clean():
-            raise RuntimeError("Рабочее дерево Git содержит реальные локальные изменения. Обновление остановлено, локальные изменения не трогаются.")
-        old = local_head(); _write_status("запущено", f"Начинаю обновление: {old[:8]}", old)
-        notify(f"⏳ Начинаю обновление XFI Guard\n\nВерсия: {old[:8]}")
+        if not worktree_clean(): raise RuntimeError("Рабочее дерево Git содержит реальные локальные изменения. Обновление остановлено, локальные изменения не трогаются.")
+        old = local_head(); _write_status("запущено", f"Начинаю обновление: {old[:8]}", old); notify(f"⏳ Начинаю обновление XFI Guard\n\nВерсия: {old[:8]}")
         run("git", "fetch", "--prune", "origin", "main", timeout=120)
         remote = run("git", "rev-parse", "origin/main").stdout.strip()
         if old == remote:
             clear_notified(); _write_status("актуально", "Сервер уже на актуальном main.", old, remote); notify("ℹ️ Обновление не требуется. Сервер уже на актуальном main."); return 0
-        run("git", "branch", "-f", ROLLBACK_BRANCH, old)
-        run("git", "reset", "--hard", "origin/main")
+        run("git", "branch", "-f", ROLLBACK_BRANCH, old); run("git", "reset", "--hard", "origin/main")
         req = REPO / "requirements-bot.txt"
         if req.exists(): run(str(REPO / ".venv/bin/pip"), "install", "-r", str(req), timeout=300)
-        validate()
-        subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
-        subprocess.run(["systemctl", "restart", SERVICE], check=True, timeout=60)
+        validate(); subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30); subprocess.run(["systemctl", "restart", SERVICE], check=True, timeout=60)
         if not bot_healthy(): raise RuntimeError("Новая версия не прошла проверку работоспособности")
-        clear_notified(); _write_status("успешно", "XFI Guard успешно обновлён.", old, remote)
-        notify(f"✅ XFI Guard успешно обновлён\n\nБыло: {old[:8]}\nСтало: {remote[:8]}\n\nБот снова работает.")
-        return 0
+        clear_notified(); _write_status("успешно", "XFI Guard успешно обновлён.", old, remote); notify(f"✅ XFI Guard успешно обновлён\n\nБыло: {old[:8]}\nСтало: {remote[:8]}\n\nБот снова работает."); return 0
     except Exception as exc:
         rollback_ok = False
         if old:
             try:
-                run("git", "reset", "--hard", old, timeout=120)
-                subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30)
-                subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60)
-                rollback_ok = bot_healthy(); clear_notified()
+                run("git", "reset", "--hard", old, timeout=120); subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30); subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60); rollback_ok = bot_healthy(); clear_notified()
             except Exception as rollback_exc: print(f"Rollback failed: {type(rollback_exc).__name__}: {rollback_exc}", file=sys.stderr)
-        _write_status("ошибка", str(exc), old)
-        notify(f"❌ Обновление XFI Guard не удалось\n\nОшибка: {type(exc).__name__}: {str(exc)[:650]}\n\nАвтоматический откат: {'✅ выполнен' if rollback_ok else '❌ НЕ выполнен'}")
-        print(f"Update failed: {type(exc).__name__}: {exc}; rollback={rollback_ok}", file=sys.stderr)
-        return 1
+        _write_status("ошибка", str(exc), old); notify(f"❌ Обновление XFI Guard не удалось\n\nОшибка: {type(exc).__name__}: {str(exc)[:650]}\n\nАвтоматический откат: {'✅ выполнен' if rollback_ok else '❌ НЕ выполнен'}"); print(f"Update failed: {type(exc).__name__}: {exc}; rollback={rollback_ok}", file=sys.stderr); return 1
     finally: release_lock()
 
 
