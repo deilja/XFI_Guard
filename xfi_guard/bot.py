@@ -33,7 +33,7 @@ def kb(rows: list[list[str]]) -> ReplyKeyboardMarkup:
 
 
 def main_kb() -> ReplyKeyboardMarkup:
-    return kb([["📊 Статус", "🔐 Безопасность"], ["🛡 Fail2Ban", "🔥 UFW"], ["🌐 VPN/Xray", "📋 События"], ["🛡 Картина атак", "🤖 AI"], ["🧠 Security Brain", "🚫 Блокировка IP"], ["🔄 Проверить сейчас"], ["🔄 Обновить XFI Guard"], ["❓ Помощь"]])
+    return kb([["📊 Статус", "🔐 Безопасность"], ["🛡 Fail2Ban", "🔥 UFW"], ["🌐 VPN/Xray", "📋 События"], ["🛡 Картина атак", "🤖 AI"], ["🧠 Security Brain", "🚫 Блокировка IP"], ["🔄 Проверить сейчас"], ["🔄 Обновить XFI Guard", "⚡ Принудительное обновление"], ["❓ Помощь"]])
 
 
 def results(items) -> str:
@@ -121,6 +121,26 @@ def build_dispatcher() -> Dispatcher:
         await message.answer("⏳ Запускаю безопасное обновление XFI Guard...")
         subprocess.Popen(["systemctl", "start", "xfi-guard-update.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    @dp.message(F.text == "⚡ Принудительное обновление")
+    async def force_update_button(message):
+        if not admin(message):
+            return
+        await message.answer(
+            "⚠️ Принудительное обновление XFI Guard\n\n"
+            "Будет заново установлен текущий origin/main, даже если SHA совпадает.\n"
+            "Перед заменой создаётся точка отката, после установки выполняется проверка бота."
+        )
+        subprocess.Popen(
+            ["/opt/xfi-guard/.venv/bin/python", "-m", "xfi_guard.force_update"],
+            cwd="/opt/xfi-guard",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    @dp.message(Command("force_update"))
+    async def force_update_command(message):
+        await force_update_button(message)
+
     @dp.message(F.text == "🤖 AI")
     async def ai_button(message):
         if admin(message):
@@ -134,7 +154,7 @@ def build_dispatcher() -> Dispatcher:
     @dp.message(F.text == "❓ Помощь")
     async def help_button(message):
         if admin(message):
-            await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/threats — рейтинг угроз\n/defense_history — история защиты\n\nИнтерфейс и ответы бота на русском языке.", reply_markup=main_kb())
+            await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/force_update — принудительно переустановить origin/main\n/threats — рейтинг угроз\n/defense_history — история защиты\n\nИнтерфейс и ответы бота на русском языке.", reply_markup=main_kb())
 
     @dp.message(F.text == "⬅️ Главное меню")
     async def back_main(message, state: FSMContext):
