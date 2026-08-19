@@ -53,7 +53,28 @@ XFI_GUARD_WEBHOOK_PORT=8080
 EOF
     chmod 600 /etc/xfi-guard/bot.env
 
-    log "Настройка Nginx для https://$WEBHOOK_DOMAIN/xfi-guard/webhook"
+    log "Настройка Nginx для $WEBHOOK_DOMAIN"
+    cat >/etc/nginx/sites-available/xfi-guard-webhook.conf <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $WEBHOOK_DOMAIN;
+    location /.well-known/acme-challenge/ { root /var/www/html; }
+    location / { return 404; }
+}
+EOF
+    ln -sf /etc/nginx/sites-available/xfi-guard-webhook.conf /etc/nginx/sites-enabled/xfi-guard-webhook.conf
+    rm -f /etc/nginx/sites-enabled/default
+    mkdir -p /var/www/html
+    nginx -t
+    systemctl enable --now nginx
+    systemctl reload nginx
+
+    if [[ ! -f "/etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem" ]]; then
+      log "Получение SSL-сертификата Let's Encrypt"
+      certbot certonly --webroot -w /var/www/html -d "$WEBHOOK_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || die "Не удалось получить SSL для $WEBHOOK_DOMAIN. Проверьте DNS A/AAAA и доступность TCP/80."
+    fi
+
     cat >/etc/nginx/sites-available/xfi-guard-webhook.conf <<EOF
 server {
     listen 80;
@@ -83,16 +104,6 @@ server {
     location / { return 404; }
 }
 EOF
-    ln -sf /etc/nginx/sites-available/xfi-guard-webhook.conf /etc/nginx/sites-enabled/xfi-guard-webhook.conf
-    rm -f /etc/nginx/sites-enabled/default
-    mkdir -p /var/www/html
-    nginx -t
-    systemctl enable --now nginx
-
-    if [[ ! -f "/etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem" ]]; then
-      log "Получение SSL-сертификата Let's Encrypt"
-      certbot certonly --webroot -w /var/www/html -d "$WEBHOOK_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || die "Не удалось получить SSL для $WEBHOOK_DOMAIN. Проверьте DNS A/AAAA и доступность TCP/80."
-    fi
     nginx -t && systemctl reload nginx
   else
     cat >/etc/xfi-guard/bot.env <<EOF
@@ -107,7 +118,6 @@ EOF
     install -m 0644 systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
     sed -i "s#^ExecStart=.*#ExecStart=$INSTALL_DIR/.venv/bin/python -m xfi_guard.bot#" /etc/systemd/system/xfi-guard-bot.service
     systemctl daemon-reload
-    systemctl enable --now xfi-guard-bot
   fi
   cat >/var/lib/xfi-guard/ai.json <<'EOF'
 {
@@ -128,6 +138,11 @@ systemctl daemon-reload
 systemctl enable --now xfi-guard
 sleep 2
 systemctl is-active --quiet xfi-guard || { journalctl -u xfi-guard -n 80 --no-pager || true; die "XFI Guard не запустился"; }
+if [[ -n "$BOT_TOKEN" ]]; then
+  systemctl enable --now xfi-guard-bot
+  sleep 2
+  systemctl is-active --quiet xfi-guard-bot || { journalctl -u xfi-guard-bot -n 80 --no-pager || true; die "Telegram bot не запустился"; }
+fi
 
 log "Установка завершена"
 printf '\nMonitor: systemctl status xfi-guard --no-pager\nLogs:    journalctl -u xfi-guard -f\nJSONL:   /var/log/xfi-guard/monitor.jsonl\n'
