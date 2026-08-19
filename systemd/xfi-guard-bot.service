@@ -12,6 +12,8 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.bot
 Restart=always
 RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
 # The bot performs administrator-approved UFW changes.
 # Filesystem sandboxing is disabled because UFW must write /etc/ufw/user.rules.
 PrivateTmp=false
