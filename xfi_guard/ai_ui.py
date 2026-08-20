@@ -13,6 +13,8 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 from .ai_store import load, save
 from .ai import AIAnalyzer
+from .ai_health import run_health_check
+from .ai_health_dashboard import dashboard_text
 
 
 class AISetupStates(StatesGroup):
@@ -47,7 +49,7 @@ def _ai_menu():
         ["🔑 Ключ Gemini", "🔑 Ключ Groq"], ["🧠 Модель Gemini", "🧠 Модель Groq"],
         ["📋 Модели Gemini", "📋 Модели Groq"],
         ["✏️ Своя модель Gemini", "✏️ Своя модель Groq"],
-        ["🧪 Проверить AI", "ℹ️ Статус AI"], ["⬅️ Главное меню"],
+        ["🧪 Проверить AI", "📊 Диагностика AI"], ["ℹ️ Статус AI"], ["⬅️ Главное меню"],
     ])
 
 
@@ -227,15 +229,28 @@ def install_ai_handlers(dp: Dispatcher) -> None:
         if not _admin(m): return
         analyzer = AIAnalyzer()
         if not analyzer.enabled():
-            await m.answer(f"❌ AI не настроен. {analyzer.last_error or 'Добавьте API-ключ.'}", reply_markup=_ai_menu()); return
-        result = await asyncio.to_thread(analyzer.analyze, {"event_type": "health_check", "severity": "info", "message": "Проверка AI XFI Guard. Ответь: AI работает."})
-        await m.answer(("✅ AI работает\n\n" + result[:3500]) if result else ("❌ AI не вернул ответ.\n\n" + (analyzer.last_error or "Неизвестная ошибка")), reply_markup=_ai_menu())
+            await m.answer("❌ AI не настроен. Добавьте API-ключ Gemini, Groq или OpenRouter.", reply_markup=_ai_menu()); return
+        result = await asyncio.to_thread(run_health_check)
+        failed = [x for x in result["results"] if not x["ok"]]
+        lines = ["🧪 AI health-check", "", f"Проверено: {len(result['results'])}", f"Успешно: {len(result['results']) - len(failed)}", f"Ошибок: {len(failed)}", f"Автовыбор: {result.get('recommended_provider') or 'нет'}", "", dashboard_text()]
+        await m.answer("\n".join(lines)[:3900], reply_markup=_ai_menu())
+
+    @dp.message(F.text == "📊 Диагностика AI")
+    async def ai_diagnostics(m):
+        if not _admin(m): return
+        result = await asyncio.to_thread(run_health_check)
+        lines = ["📊 Диагностика AI", "", f"Автоматически выбран: {result.get('recommended_provider') or 'нет'}", "Провайдеры:"]
+        for item in result["results"]:
+            state = "✅ OK" if item["ok"] else "❌ FAIL"
+            detail = "" if item["ok"] else f" | {item['error'][:180]}"
+            lines.append(f"{state} {item['provider']} / {item['model']} — {item['latency_ms']} ms{detail}")
+        await m.answer("\n".join(lines)[:3900], reply_markup=_ai_menu())
 
     @dp.message(F.text == "ℹ️ Статус AI")
     async def ai_status(m):
         if not _admin(m): return
         cfg = load(); analyzer = AIAnalyzer()
-        await m.answer("ℹ️ Статус AI\n\n" + f"Провайдер: {cfg.get('provider', 'gemini')}\nGemini key: {_mask(cfg.get('gemini_key', ''))}\nGemini model: {cfg.get('gemini_model', '')}\nGroq key: {_mask(cfg.get('groq_key', ''))}\nGroq model: {cfg.get('groq_model', '')}\nГотов: {'ДА' if analyzer.enabled() else 'НЕТ'}\nОшибка: {analyzer.last_error or 'нет'}", reply_markup=_ai_menu())
+        await m.answer("ℹ️ Статус AI\n\n" + f"Провайдер: {cfg.get('provider', 'gemini')}\nАвтовыбор: {cfg.get('ai_auto_selected_provider', 'нет')}\nGemini key: {_mask(cfg.get('gemini_key', ''))}\nGemini model: {cfg.get('gemini_model', '')}\nGroq key: {_mask(cfg.get('groq_key', ''))}\nGroq model: {cfg.get('groq_model', '')}\nГотов: {'ДА' if analyzer.enabled() else 'НЕТ'}\nОшибка: {analyzer.last_error or 'нет'}", reply_markup=_ai_menu())
 
     @dp.message(F.text == "⬅️ AI")
     async def back_ai(m, state):
