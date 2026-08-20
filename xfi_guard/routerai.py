@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from urllib import error, request
 
 BASE_URL = "https://routerai.ru/api/v1"
@@ -21,6 +22,10 @@ class RouterAIAdapter:
         self.api_key = api_key or os.getenv("ROUTERAI_API_KEY") or ""
         self.timeout = timeout
         self.last_error = ""
+        self._preferred_models: list[str] = []
+        self._free_models: list[str] = []
+        self._paid_models: list[str] = []
+        self._classification_ts = 0.0
 
     @property
     def configured(self) -> bool:
@@ -41,8 +46,7 @@ class RouterAIAdapter:
         with request.urlopen(req, timeout=self.timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def models(self) -> list[str]:
-        """Return RouterAI model IDs visible to the account."""
+    def _raw_models(self) -> list[str]:
         if not self.configured:
             return []
         try:
@@ -51,6 +55,15 @@ class RouterAIAdapter:
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return []
+
+    def models(self) -> list[str]:
+        """Return text-chat models with free models first, then paid models."""
+        if not self.configured:
+            return []
+        candidates = self._raw_models()
+        free, paid = self._classify_models(candidates)
+        self._set_classification(free, paid)
+        return list(self._preferred_models)
 
     @staticmethod
     def _is_text_chat_endpoint(endpoint: dict) -> bool:
@@ -113,26 +126,47 @@ class RouterAIAdapter:
                 self.last_error = f"{model}: {type(exc).__name__}: {exc}"
         return list(dict.fromkeys(free)), list(dict.fromkeys(paid))
 
+    def _set_classification(self, free: list[str], paid: list[str]) -> None:
+        self._free_models = list(dict.fromkeys(free))
+        self._paid_models = list(dict.fromkeys(paid))
+        self._preferred_models = list(dict.fromkeys([*self._free_models, *self._paid_models]))
+        self._classification_ts = time.monotonic()
+
+    def _ensure_classification(self) -> None:
+        if self._preferred_models and time.monotonic() - self._classification_ts < 300:
+            return
+        self.models()
+
     def free_models(self, candidates: list[str] | None = None) -> list[str]:
         """Return only models having an explicitly zero-cost text-chat endpoint."""
         if not self.configured:
             return []
-        free, _ = self._classify_models(candidates or self.models())
+        if candidates is None:
+            self._ensure_classification()
+            return list(self._free_models)
+        free, paid = self._classify_models(candidates)
+        self._set_classification(free, paid)
         return free
 
     def paid_models(self, candidates: list[str] | None = None) -> list[str]:
         """Return text-chat models with non-zero pricing."""
         if not self.configured:
             return []
-        _, paid = self._classify_models(candidates or self.models())
+        if candidates is None:
+            self._ensure_classification()
+            return list(self._paid_models)
+        free, paid = self._classify_models(candidates)
+        self._set_classification(free, paid)
         return paid
 
     def text_models(self, candidates: list[str] | None = None, include_paid: bool = True) -> list[str]:
         """Return free text models first, then paid text models when allowed."""
-        if not self.configured:
-            return []
-        free, paid = self._classify_models(candidates or self.models())
-        return list(dict.fromkeys(free + (paid if include_paid else [])))
+        if candidates is None:
+            self._ensure_classification()
+            return list(self._free_models) + (list(self._paid_models) if include_paid else [])
+        free, paid = self._classify_models(candidates)
+        self._set_classification(free, paid)
+        return free + (paid if include_paid else [])
 
     @staticmethod
     def _zero(value) -> bool:
@@ -198,38 +232,43 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str) -> str | None:
-        """Analyze using a caller-approved text-chat model."""
+        """Analyze with free-first ordering and paid fallback when discovered."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
-        try:
-            result = self._request(
-                "POST",
-                f"{BASE_URL}/chat/completions",
-                {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 500,
-                    "provider": {"allow_fallbacks": False},
-                },
-            )
-            content = self._content_from_response(result)
-            if not content:
-                self.last_error = "empty response"
-                return None
-            self.last_error = ""
-            return content
-        except error.HTTPError as exc:
+
+        self._ensure_classification()
+        candidates = list(dict.fromkeys([*self._free_models, model, *self._paid_models]))
+        last_error = ""
+        for candidate in candidates:
             try:
-                detail = exc.read().decode("utf-8", errors="replace")[:800]
-            except Exception:
-                detail = ""
-            self.last_error = f"HTTP {exc.code}: {detail}"
-            return None
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return None
+                result = self._request(
+                    "POST",
+                    f"{BASE_URL}/chat/completions",
+                    {
+                        "model": candidate,
+                        "messages": [
+                            {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0,
+                        "max_tokens": 500,
+                        "provider": {"allow_fallbacks": False},
+                    },
+                )
+                content = self._content_from_response(result)
+                if content:
+                    self.last_error = ""
+                    return content
+                last_error = f"{candidate}: empty response"
+            except error.HTTPError as exc:
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")[:800]
+                except Exception:
+                    detail = ""
+                last_error = f"{candidate}: HTTP {exc.code}: {detail}"
+            except Exception as exc:
+                last_error = f"{candidate}: {type(exc).__name__}: {exc}"
+
+        self.last_error = last_error or "empty response"
+        return None
