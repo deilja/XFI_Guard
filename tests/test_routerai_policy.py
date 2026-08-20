@@ -24,21 +24,21 @@ def test_routerai_free_first_and_paid_policy():
         ]
 
 
-def test_routerai_selected_paid_model_is_only_allowed_by_policy():
+def test_routerai_uses_paid_model_only_when_no_free_model_exists():
     adapter = RouterAIAdapter("test-key")
-    models = ["free/provider-chat", "paid/provider-chat"]
+    models = ["paid/provider-chat"]
 
     with patch.object(adapter, "models", return_value=models), patch.object(
-        adapter, "free_models", return_value=["free/provider-chat"]
+        adapter, "free_models", return_value=[]
     ):
         with patch.object(adapter, "_request", return_value={
             "choices": [{"message": {"content": "OK"}}]
         }) as request:
-            assert adapter.analyze("paid/provider-chat", "test", allow_paid=False) == "OK"
-            assert request.call_args.kwargs["payload"]["model"] == "free/provider-chat"
+            assert adapter.analyze("paid/provider-chat", "test", allow_paid=False) is None
+            request.assert_not_called()
 
         with patch.object(adapter, "_request", return_value={
             "choices": [{"message": {"content": "OK"}}]
         }) as request:
             assert adapter.analyze("paid/provider-chat", "test", allow_paid=True) == "OK"
-            assert request.call_args.kwargs["payload"]["model"] == "free/provider-chat"
+            assert request.call_args.args[2]["model"] == "paid/provider-chat"
