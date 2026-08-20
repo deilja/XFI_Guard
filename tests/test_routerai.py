@@ -64,3 +64,60 @@ def test_analyze_does_not_use_paid_when_disabled():
 
     assert result is None
     assert adapter.last_error == "no RouterAI chat models available"
+
+
+def test_analyze_falls_through_after_empty_response():
+    adapter = RouterAIAdapter("test-key")
+    calls = []
+
+    def fake_request(method, url, payload=None):
+        model = payload["model"]
+        calls.append(model)
+        if model == "provider/free-broken":
+            return {"choices": [{"message": {"content": ""}}]}
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    with patch.object(adapter, "ordered_models", return_value=["provider/free-broken", "provider/free-good"]), \
+         patch.object(adapter, "_request", side_effect=fake_request):
+        result = adapter.analyze("provider/free-broken", "Reply OK", allow_paid=False)
+
+    assert result == "OK"
+    assert calls == ["provider/free-broken", "provider/free-good"]
+    assert adapter.last_model == "provider/free-good"
+
+
+def test_analyze_uses_paid_only_after_free_models_fail():
+    adapter = RouterAIAdapter("test-key")
+    calls = []
+
+    def fake_request(method, url, payload=None):
+        model = payload["model"]
+        calls.append(model)
+        if model == "provider/free-broken":
+            raise RuntimeError("free backend unavailable")
+        return {"choices": [{"message": {"content": "OK"}}]}
+
+    with patch.object(adapter, "ordered_models", return_value=["provider/free-broken", "provider/paid-good"]), \
+         patch.object(adapter, "_request", side_effect=fake_request):
+        result = adapter.analyze("provider/free-broken", "Reply OK", allow_paid=True)
+
+    assert result == "OK"
+    assert calls == ["provider/free-broken", "provider/paid-good"]
+    assert adapter.last_model == "provider/paid-good"
+
+
+def test_analyze_stops_at_free_chain_when_paid_is_disabled():
+    adapter = RouterAIAdapter("test-key")
+    calls = []
+
+    def fake_request(method, url, payload=None):
+        calls.append(payload["model"])
+        raise RuntimeError("backend unavailable")
+
+    with patch.object(adapter, "ordered_models", return_value=["provider/free-broken"]), \
+         patch.object(adapter, "_request", side_effect=fake_request):
+        result = adapter.analyze("provider/free-broken", "Reply OK", allow_paid=False)
+
+    assert result is None
+    assert calls == ["provider/free-broken"]
+    assert "provider/free-broken" in adapter.last_error
