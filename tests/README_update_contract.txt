@@ -1,0 +1,1 @@
+XFI Guard update contract: existing /etc/xfi-guard/bot.env and /var/lib/xfi-guard/ai.json must survive reinstall/update; updater must notify Telegram administrators on start, success, and failure/rollback.
