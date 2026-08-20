@@ -44,14 +44,14 @@ def install_ai_center_handlers(dp:Dispatcher)->None:
     @dp.message(F.text == "🩺 Здоровье AI")
     async def health(m):
         if not _admin(m): return
-        await m.answer("⏳ Проверяю Gemini, Groq, OpenRouter и DeepSeek...")
+        await m.answer("⏳ Проверяю Gemini, Groq и OpenRouter...")
         try: await m.answer(build_health_report(await asyncio.to_thread(run_health_check)),reply_markup=ai_center_menu())
         except Exception as exc: await m.answer(f"❌ AI health: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
 
     @dp.message(F.text == "🧪 Проверить все AI")
     async def check_all(m):
         if not _admin(m): return
-        await m.answer("⏳ Реальная проверка API всех четырёх AI...")
+        await m.answer("⏳ Реальная проверка API трёх бесплатных AI...")
         try: await m.answer(build_health_report(await asyncio.to_thread(run_health_check)),reply_markup=ai_center_menu())
         except Exception as exc: await m.answer(f"❌ Проверка AI: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
 
@@ -60,7 +60,7 @@ def install_ai_center_handlers(dp:Dispatcher)->None:
         if not _admin(m): return
         try:
             analyzer=AIAnalyzer(); analyzer.sync(); status=analyzer.status(); cfg=load(); cfg.update({"provider":status["selected_provider"],"openrouter_model":status["openrouter_model"],"openrouter_models":tuple(status["openrouter_models"]) }); save(cfg)
-            await m.answer("🔄 AI синхронизирован\n\n"+f"Доступны по ключу: {', '.join(status['available_providers']) or 'нет'}\n"+f"Gemini: {status['gemini_model']}\nGroq: {status['groq_model']}\nOpenRouter: {status['openrouter_model']}\nDeepSeek: {status['deepseek_model']}",reply_markup=ai_center_menu())
+            await m.answer("🔄 AI синхронизирован\n\n"+f"Доступны по ключу: {', '.join(status['available_providers']) or 'нет'}\n"+f"Gemini: {status['gemini_model']}\nGroq: {status['groq_model']}\nOpenRouter: {status['openrouter_model']}",reply_markup=ai_center_menu())
         except Exception as exc: await m.answer(f"❌ Синхронизация AI: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
 
     @dp.message(F.text == "📊 Консенсус AI")
