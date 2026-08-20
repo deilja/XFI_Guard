@@ -12,9 +12,10 @@ from urllib import error, request
 from .ai_store import load
 from .gemini import GeminiAnalyzer
 
-PROVIDERS = ("gemini", "groq", "openrouter")
-DEFAULT_WEIGHTS = {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0}
+PROVIDERS = ("gemini", "groq", "openrouter", "deepseek")
+DEFAULT_WEIGHTS = {p: 1.0 for p in PROVIDERS}
 OPENROUTER_FREE_FALLBACK = "openrouter/free"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 
 
 class AIAnalyzer:
@@ -39,6 +40,8 @@ class AIAnalyzer:
         configured = cfg.get("openrouter_models") or os.getenv("XFI_GUARD_OPENROUTER_MODELS", "")
         raw = configured if isinstance(configured, (list, tuple)) else str(configured).split(",")
         self.openrouter_models = [str(x).strip() for x in raw if str(x).strip()] or [self.openrouter_model]
+        self.deepseek_key = cfg.get("deepseek_key") or os.getenv("DEEPSEEK_API_KEY")
+        self.deepseek_model = cfg.get("deepseek_model") or DEEPSEEK_DEFAULT_MODEL
         self.weights = {**DEFAULT_WEIGHTS, **{k: float(v) for k, v in (cfg.get("ai_weights") or {}).items() if k in PROVIDERS}}
         self.min_consensus = float(cfg.get("ai_min_consensus", os.getenv("XFI_GUARD_MIN_CONSENSUS", "0.60")))
         self.request_timeout = float(cfg.get("ai_timeout", os.getenv("XFI_GUARD_AI_TIMEOUT", "20")))
@@ -49,15 +52,16 @@ class AIAnalyzer:
     def sync(self):
         return self._sync_config()
 
+    def _has_key(self, provider):
+        return {
+            "gemini": self.gemini.enabled(),
+            "groq": bool(self.groq_key),
+            "openrouter": bool(self.openrouter_key),
+            "deepseek": bool(self.deepseek_key),
+        }.get(provider, False)
+
     def available_providers(self):
-        out = []
-        if self.gemini.enabled():
-            out.append("gemini")
-        if self.groq_key:
-            out.append("groq")
-        if self.openrouter_key:
-            out.append("openrouter")
-        return out
+        return [provider for provider in PROVIDERS if self._has_key(provider)]
 
     def configured_providers(self):
         return self.available_providers()
@@ -67,10 +71,15 @@ class AIAnalyzer:
 
     def health(self):
         now = time.monotonic()
-        return {
-            key: {"failures": count, "cooldown_remaining": round(max(0, deadline - now), 1), "healthy": deadline <= now}
-            for key, (count, deadline) in self._failures.items()
-        }
+        result = {}
+        for provider in PROVIDERS:
+            entries = {key: value for key, value in self._failures.items() if key.startswith(provider + ":")}
+            if not entries:
+                result[provider] = {"configured": self._has_key(provider), "healthy": True, "failures": 0, "cooldown_remaining": 0}
+            else:
+                count, deadline = max(entries.values(), key=lambda x: x[1])
+                result[provider] = {"configured": self._has_key(provider), "healthy": deadline <= now, "failures": count, "cooldown_remaining": round(max(0, deadline - now), 1)}
+        return result
 
     def status(self):
         self._sync_config()
@@ -82,6 +91,7 @@ class AIAnalyzer:
             "groq_model": self.groq_model,
             "openrouter_model": self.openrouter_model,
             "openrouter_models": self.openrouter_models,
+            "deepseek_model": self.deepseek_model,
             "ai_weights": self.weights,
             "min_consensus": self.min_consensus,
             "request_timeout": self.request_timeout,
@@ -120,19 +130,31 @@ class AIAnalyzer:
             self.last_provider_errors[provider] = str(message)[:1200]
         self.last_error = f"{provider}: {message}"
 
-    def _openrouter_candidates(self, model):
-        """Основная модель + безопасный бесплатный fallback, максимум два запроса."""
-        candidates = []
-        for item in (model, self.openrouter_model, OPENROUTER_FREE_FALLBACK):
-            item = str(item or "").strip()
-            if item and item not in candidates:
-                candidates.append(item)
-        return candidates[:2]
+    def _models_for(self, provider, model):
+        if provider == "openrouter":
+            candidates = []
+            for item in (model, self.openrouter_model, *self.openrouter_models, OPENROUTER_FREE_FALLBACK):
+                item = str(item or "").strip()
+                if item and item not in candidates:
+                    candidates.append(item)
+            return candidates[:3]
+        return [model]
+
+    def _endpoint(self, provider):
+        return {
+            "groq": "https://api.groq.com/openai/v1/chat/completions",
+            "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+            "deepseek": "https://api.deepseek.com/chat/completions",
+        }.get(provider)
+
+    def _key_for(self, provider):
+        return {"groq": self.groq_key, "openrouter": self.openrouter_key, "deepseek": self.deepseek_key}.get(provider)
 
     def _chat_model(self, provider, model, prompt, json_mode=False, force=False):
         key_id = f"{provider}:{model}"
         if not force and not self._healthy(key_id):
             return None
+
         if provider == "gemini":
             try:
                 result = self.gemini.analyze({"event_type": "security_analysis", "message": prompt})
@@ -143,25 +165,23 @@ class AIAnalyzer:
                     return result
                 self._set_provider_error(provider, self.gemini.last_error or "пустой ответ")
                 self._failure(key_id)
-                return None
             except Exception as exc:
                 self._set_provider_error(provider, f"{type(exc).__name__}: {exc}")
                 self._failure(key_id)
-                return None
+            return None
 
-        key = self.groq_key if provider == "groq" else self.openrouter_key
+        key = self._key_for(provider)
         if not key:
             self._set_provider_error(provider, "API-ключ не настроен")
             return None
 
-        models = self._openrouter_candidates(model) if provider == "openrouter" else [model]
         last_detail = ""
-        for candidate in models:
+        for candidate in self._models_for(provider, model):
             candidate_key = f"{provider}:{candidate}"
             if not force and not self._healthy(candidate_key):
                 continue
-            url = "https://api.groq.com/openai/v1/chat/completions" if provider == "groq" else "https://openrouter.ai/api/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "XFI-Guard/1.2"}
+            url = self._endpoint(provider)
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "XFI-Guard/1.4"}
             if provider == "openrouter":
                 headers.update({"HTTP-Referer": "https://github.com/deilja/XFI_Guard", "X-Title": "XFI Guard"})
             body = {
@@ -173,6 +193,10 @@ class AIAnalyzer:
                 "temperature": 0,
                 "max_tokens": 900,
             }
+            if provider == "deepseek":
+                body["thinking"] = {"type": "disabled"}
+            if json_mode:
+                body["response_format"] = {"type": "json_object"}
             try:
                 req = request.Request(url, data=json.dumps(body, ensure_ascii=False).encode(), headers=headers, method="POST")
                 with request.urlopen(req, timeout=self.request_timeout) as response:
@@ -193,19 +217,10 @@ class AIAnalyzer:
                         detail += f": {raw}"
                 except Exception:
                     pass
-                if exc.code == 403:
-                    detail = "HTTP 403 Forbidden (ключ/доступ отклонён)"
-                elif exc.code == 401:
-                    detail = "HTTP 401 Unauthorized (проверьте API-ключ)"
-                elif exc.code == 404:
-                    detail = "HTTP 404 Not Found (проверьте модель/endpoint)"
-                elif exc.code == 402:
-                    detail = "HTTP 402 Payment Required (для этой модели нужен баланс)"
-                elif exc.code == 429:
-                    detail = "HTTP 429 Too Many Requests (лимит временно исчерпан)"
+                messages = {401: "HTTP 401 Unauthorized (проверьте API-ключ)", 402: "HTTP 402 Payment Required (нужен баланс)", 403: "HTTP 403 Forbidden (ключ/доступ отклонён)", 404: "HTTP 404 Not Found (проверьте модель/endpoint)", 429: "HTTP 429 Too Many Requests (лимит временно исчерпан)"}
+                if exc.code in messages:
+                    detail = messages[exc.code]
                 last_detail = f"{candidate}: {detail}"
-                # Для OpenRouter 402/404/400 пробуем бесплатный маршрут, не считая
-                # провайдер полностью недоступным до завершения fallback.
                 if provider == "openrouter" and exc.code in {400, 402, 404} and candidate != OPENROUTER_FREE_FALLBACK:
                     continue
                 self._set_provider_error(provider, last_detail)
@@ -224,10 +239,17 @@ class AIAnalyzer:
 
     def _jobs(self):
         jobs = []
+        models = {
+            "gemini": self.gemini.model,
+            "groq": self.groq_model,
+            "openrouter": self.openrouter_models[0] if self.openrouter_models else self.openrouter_model,
+            "deepseek": self.deepseek_model,
+        }
         for provider in self.available_providers():
-            models = [self.gemini.model] if provider == "gemini" else [self.groq_model] if provider == "groq" else [self.openrouter_models[0] if self.openrouter_models else self.openrouter_model]
-            jobs.extend((provider, model) for model in models)
-        return [job for job in jobs if self._healthy(f"{job[0]}:{job[1]}")]
+            model = models[provider]
+            if self._healthy(f"{provider}:{model}"):
+                jobs.append((provider, model))
+        return jobs
 
     @staticmethod
     def _parse_verdict(text):
@@ -262,28 +284,23 @@ class AIAnalyzer:
         return {"risk": risk, "confidence": confidence, "reason": reason}
 
     def analyze_consensus(self, event):
-        """Запускает все настроенные AI одновременно и формирует единый вердикт."""
         self._sync_config()
         self.last_provider_errors = {}
         jobs = self._jobs()
         configured = self.available_providers()
         if not jobs:
             self.last_error = "AI-провайдеры настроены, но временно недоступны."
-            return {"verdicts": [], "providers_used": 0, "models_used": 0, "providers": [], "models": [], "winner": "unknown", "confidence": 0, "consensus": False, "degraded": True, "error": self.last_error, "provider_errors": dict(self.last_provider_errors), "configured_providers": configured, "jobs_attempted": 0}
+            return {"verdicts": [], "providers_used": 0, "models_used": 0, "providers": [], "models": [], "winner": "unknown", "confidence": 0, "consensus": False, "degraded": True, "error": self.last_error, "provider_errors": {}, "configured_providers": configured, "jobs_attempted": 0}
 
-        prompt = (
-            'Верни только JSON с полями risk, confidence, reason. '
-            'risk должен быть одним из low, medium, high, critical; confidence от 0 до 1. '
-            'Оцени только факты события безопасности VPS.\n' + json.dumps(event, ensure_ascii=False)
-        )
+        prompt = "Верни только JSON с полями risk, confidence, reason. risk: low|medium|high|critical; confidence: 0..1. Оцени только факты события безопасности VPS.\n" + json.dumps(event, ensure_ascii=False)
 
         def run(job):
             provider, model = job
-            parsed = self._parse_verdict(self._chat_model(provider, model, prompt, False))
+            parsed = self._parse_verdict(self._chat_model(provider, model, prompt, json_mode=True))
             if parsed:
                 return {"provider": provider, "model": model, **parsed}
             if provider not in self.last_provider_errors:
-                self._set_provider_error(provider, "ответ получен, но не удалось распознать JSON verdict")
+                self._set_provider_error(provider, "ответ получен, но verdict JSON не распознан")
             return None
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.max_workers, len(jobs))) as pool:
@@ -293,7 +310,6 @@ class AIAnalyzer:
         scores = {risk: 0.0 for risk in ("low", "medium", "high", "critical")}
         for item in verdicts:
             scores[item["risk"]] += self.weights.get(item["provider"], 1.0) * item["confidence"]
-
         winner = max(scores, key=scores.get) if verdicts else "unknown"
         weighted = scores[winner] / total if total else 0
         agreement = sum(self.weights.get(item["provider"], 1.0) for item in verdicts if item["risk"] == winner) / (total or 1)
@@ -303,7 +319,6 @@ class AIAnalyzer:
         degraded = len(providers) < len(configured)
         if degraded and self.last_provider_errors:
             self.last_error = "; ".join(f"{k}: {v}" for k, v in self.last_provider_errors.items())[:2000]
-
         return {
             "verdicts": verdicts,
             "providers_used": len(providers),
@@ -324,15 +339,37 @@ class AIAnalyzer:
             "jobs_attempted": len(jobs),
         }
 
+    def check_provider(self, provider, force=True):
+        """Реальная проверка API: один короткий inference-запрос, без доверия к наличию ключа."""
+        self._sync_config()
+        models = {
+            "gemini": self.gemini.model,
+            "groq": self.groq_model,
+            "openrouter": self.openrouter_model,
+            "deepseek": self.deepseek_model,
+        }
+        if provider not in PROVIDERS:
+            return {"provider": provider, "ok": False, "error": "unknown_provider"}
+        model = models[provider]
+        if not self._has_key(provider):
+            return {"provider": provider, "model": model, "ok": False, "error": "API-ключ не настроен"}
+        result = self._chat_model(provider, model, "Проверка доступности XFI Guard. Ответь JSON: {\"risk\":\"low\",\"confidence\":1,\"reason\":\"OK\"}", json_mode=True, force=force)
+        parsed = self._parse_verdict(result)
+        return {"provider": provider, "model": self.last_model or model, "ok": bool(parsed), "error": self.last_provider_errors.get(provider, "")}
+
+    def check_all_providers(self):
+        self.reset_health()
+        return [self.check_provider(provider, force=True) for provider in PROVIDERS]
+
     def analyze(self, event, allow_fallback=True):
         self._sync_config()
         order = [self.provider] + [p for p in PROVIDERS if p != self.provider]
         for provider in order if allow_fallback else [self.provider]:
-            if provider not in self.available_providers():
+            if not self._has_key(provider):
                 continue
-            model = self.gemini.model if provider == "gemini" else self.groq_model if provider == "groq" else self.openrouter_model
+            model = {"gemini": self.gemini.model, "groq": self.groq_model, "openrouter": self.openrouter_model, "deepseek": self.deepseek_model}[provider]
             prompt = "Проанализируй событие VPS. Дай risk, confidence и reason в JSON на русском.\n" + json.dumps(event, ensure_ascii=False)
-            result = self._chat_model(provider, model, prompt)
+            result = self._chat_model(provider, model, prompt, json_mode=True)
             if result:
                 return result
         return None
