@@ -62,14 +62,16 @@ def _notify_auto_blocks(results: list[dict]) -> None:
                 f"Попыток: {item['attempts']}\n"
                 f"Уровень: {str(item['risk']).upper()}\n"
                 f"Режим AI: {item.get('analysis_mode', 'unknown')}\n"
-                f"Уверенность AI: {item['confidence']:.0%}\n\n"
-                f"{item.get('message', 'IP автоматически заблокирован UFW.')}"
+                f"Уверенность AI: {item['confidence']:.0%}\n"
+                "Срок блокировки: 7 дней\n"
+                "Backend: Fail2Ban + UFW\n\n"
+                f"{item.get('message', 'IP автоматически заблокирован Fail2Ban.')}"
             )
         elif item.get("action") == "block_failed":
             notify(
                 "⚠️ XFI Guard — автоматическая блокировка не выполнена\n\n"
                 f"IP: {item['ip']}\n"
-                f"Причина: {item.get('message', 'ошибка UFW')}"
+                f"Причина: {item.get('message', 'ошибка Fail2Ban')}"
             )
 
 
@@ -153,8 +155,6 @@ def run_forever(config: MonitorConfig) -> None:
                 _notify_ai_consensus(event, result)
 
         if events:
-            # AutoBlocker reuses event["ai_consensus"], so one security event
-            # produces exactly one AI consensus request and one source of truth.
             defense_results = auto_blocker.evaluate(events)
             if defense_results:
                 write_snapshot(config.output_file, snapshot, events + [{"event_type": "auto_defense", **item} for item in defense_results])
