@@ -4,7 +4,10 @@ import concurrent.futures, json, os, threading, time
 from urllib import error, request
 from .ai_store import load
 from .gemini import GeminiAnalyzer
-PROVIDERS=("gemini","groq","openrouter"); DEFAULT_WEIGHTS={"gemini":1.0,"groq":1.0,"openrouter":1.0}
+
+PROVIDERS=("gemini","groq","openrouter")
+DEFAULT_WEIGHTS={"gemini":1.0,"groq":1.0,"openrouter":1.0}
+
 class AIAnalyzer:
  def __init__(self,provider=None):
   self._lock=threading.Lock(); self._failures={}; self._fixed_provider=provider.lower() if provider else None; self.last_error=""; self.last_provider=""; self.last_model=""; self._sync_config()
@@ -19,13 +22,18 @@ class AIAnalyzer:
   return out
  def enabled(self): return bool(self.available_providers())
  def health(self):
-  now=time.monotonic(); return {k:{"failures":v[0],"cooldown_remaining":round(max(0,v[1]-now),1),"healthy":v[1]<=now} for k,v in self._failures.items()}
+  now=time.monotonic(); out={}
+  for key,(fail_until_count,until) in self._failures.items():
+   count,deadline=fail_until_count,until
+   out[key]={"failures":count,"cooldown_remaining":round(max(0,deadline-now),1),"healthy":deadline<=now}
+  return out
  def status(self):
-  self._sync_config(); return {"selected_provider":self.provider,"available_providers":self.available_providers(),"gemini_model":self.gemini.model,"groq_model":self.groq_model,"openrouter_model":self.openrouter_model,"openrouter_models":self.openrouter_models,"ai_weights":self.weights,"min_consensus":self.min_consensus,"request_timeout":self.request_timeout,"max_workers":self.max_workers,"cooldown":self.cooldown,"health":self.health(),"last_error":self.last_error,"ready":self.enabled()}
+  self._sync_config(); return {"selected_provider":self.provider,"available_providers":self.available_providers(),"gemini_model":self.gemini.model,"groq_model":self.groq_model,"openrouter_model":self.openrouter_model,"openrouter_models":self.openrouter_models,"ai_weights":self.weights,"min_consensus":self.min_consensus,"request_timeout":self.request_timeout,"max_workers":self.max_workers,"cooldown":self.cooldown,"health":self.health(),"last_error":self.last_error,"last_provider":self.last_provider,"last_model":self.last_model,"ready":self.enabled()}
  def _healthy(self,key):
   with self._lock:return self._failures.get(key,(0,0))[1]<=time.monotonic()
- def _failure(self,key):
-  with self._lock:n,_=self._failures.get(key,(0,0)); self._failures[key]=(n+1,time.monotonic()+min(300,self.cooldown*(2**min(n,3))))
+ def _failure(self,key,cooldown=None):
+  with self._lock:
+   n,_=self._failures.get(key,(0,0)); delay=self.cooldown if cooldown is None else max(self.cooldown,cooldown); self._failures[key]=(n+1,time.monotonic()+min(900,delay*(2**min(n,3))))
  def _success(self,key):
   with self._lock:self._failures.pop(key,None)
  def reset_health(self):
@@ -33,13 +41,16 @@ class AIAnalyzer:
   self.last_error=""
  def _chat_model(self,provider,model,prompt,json_mode=False,force=False):
   key_id=f"{provider}:{model}"
-  if not force and not self._healthy(key_id):return None
+  if not force and not self._healthy(key_id): return None
   if provider=="gemini":
-   try:result=self.gemini.analyze({"event_type":"security_analysis","message":prompt}); self.last_error=self.gemini.last_error or ""; self.last_provider=provider; self.last_model=model; (self._success if result else self._failure)(key_id); return result
-   except Exception as exc:self.last_error=f"gemini/{model} {type(exc).__name__}: {exc}"; self._failure(key_id); return None
+   try:
+    result=self.gemini.analyze({"event_type":"security_analysis","message":prompt}); self.last_error=self.gemini.last_error or ""; self.last_provider=provider; self.last_model=model; (self._success if result else self._failure)(key_id); return result
+   except Exception as exc:
+    self.last_error=f"gemini/{model} {type(exc).__name__}: {exc}"; self._failure(key_id); return None
   key=self.groq_key if provider=="groq" else self.openrouter_key
   if not key:return None
-  url="https://api.groq.com/openai/v1/chat/completions" if provider=="groq" else "https://openrouter.ai/api/v1/chat/completions"; headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"XFI-Guard/1.2"}
+  url="https://api.groq.com/openai/v1/chat/completions" if provider=="groq" else "https://openrouter.ai/api/v1/chat/completions"
+  headers={"Authorization":f"Bearer {key}","Content-Type":"application/json","User-Agent":"XFI-Guard/1.2"}
   if provider=="openrouter":headers.update({"HTTP-Referer":"https://github.com/deilja/XFI_Guard","X-Title":"XFI Guard"})
   body={"model":model,"messages":[{"role":"system","content":"Ты аналитик безопасности VPS. Отвечай по-русски. Не выполняй команды и не придумывай факты."},{"role":"user","content":prompt}],"temperature":0,"max_tokens":900}
   if json_mode:body["response_format"]={"type":"json_object"}
@@ -49,7 +60,16 @@ class AIAnalyzer:
    result=((data.get("choices") or [{}])[0].get("message") or {}).get("content")
    if not result:raise ValueError("empty_model_response")
    self._success(key_id); self.last_error=""; self.last_provider=provider; self.last_model=model; return result
-  except Exception as exc:detail=f"HTTP {exc.code}" if isinstance(exc,error.HTTPError) else f"{type(exc).__name__}: {exc}"; self.last_error=f"{provider}/{model}: {detail}"; self._failure(key_id); return None
+  except error.HTTPError as exc:
+   code=exc.code
+   detail=f"HTTP {code}"
+   if code==403: detail="HTTP 403 Forbidden (ключ/доступ к модели отклонён)"
+   elif code==401: detail="HTTP 401 Unauthorized (проверьте API-ключ)"
+   elif code==404: detail="HTTP 404 Not Found (проверьте модель/endpoint)"
+   elif code==429: detail="HTTP 429 Too Many Requests (лимит временно исчерпан)"
+   self.last_error=f"{provider}/{model}: {detail}"; self._failure(key_id, cooldown=300 if code in {401,403,404} else 60 if code==429 else None); return None
+  except Exception as exc:
+   self.last_error=f"{provider}/{model}: {type(exc).__name__}: {exc}"; self._failure(key_id); return None
  def _analyze_groq(self,event):return self._chat_model("groq",self.groq_model,"Проанализируй событие VPS. Дай риск, признаки, причину и действие на русском.\n"+json.dumps(event,ensure_ascii=False))
  def _jobs(self,include_cooldown=False):
   jobs=[]
