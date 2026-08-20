@@ -1,18 +1,21 @@
 [Unit]
 Description=XFI Guard Autonomous Security Monitor
-After=network-online.target
+After=network-online.target xfi-guard-bot.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 -m xfi_guard.security_monitor
+WorkingDirectory=/opt/xfi-guard
+EnvironmentFile=-/etc/xfi-guard/bot.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.security_monitor
 Restart=always
 RestartSec=10
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=true
+NoNewPrivileges=false
+PrivateTmp=false
+ProtectSystem=off
+ProtectHome=false
 ReadWritePaths=/var/lib/xfi-guard
 
 [Install]
