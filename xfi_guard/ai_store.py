@@ -12,6 +12,15 @@ DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 
+# Groq has retired/changed availability of several legacy model IDs. Keep a
+# migration table so an old ai.json cannot permanently pin the monitor to a
+# known-invalid model and produce HTTP 404 on every request.
+LEGACY_GROQ_MODELS = {
+    "llama-3.3-70b-versatile": DEFAULT_GROQ_MODEL,
+    "llama-3.1-70b-versatile": DEFAULT_GROQ_MODEL,
+    "llama3-70b-8192": DEFAULT_GROQ_MODEL,
+}
+
 
 def load(path: str = DEFAULT_PATH) -> dict:
     defaults = AISettings(
@@ -26,6 +35,12 @@ def load(path: str = DEFAULT_PATH) -> dict:
         raw = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return defaults.model_dump()
+
+        # Migrate legacy Groq model IDs transparently. This only changes the
+        # model selection; API keys and all other user settings are preserved.
+        if raw.get("groq_model") in LEGACY_GROQ_MODELS:
+            raw = {**raw, "groq_model": LEGACY_GROQ_MODELS[raw["groq_model"]]}
+
         merged = {**defaults.model_dump(), **raw}
         return AISettings.model_validate(merged).model_dump()
     except (OSError, json.JSONDecodeError, ValueError):

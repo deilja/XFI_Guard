@@ -32,19 +32,13 @@ def scan_once(threshold=60,max_ips=5,notify=True):
         alert={"id":_fingerprint(item),"decision_id":decision["id"],"timestamp":datetime.now(timezone.utc).isoformat(),"ip":item.get("ip"),"score":item.get("risk_score"),"risk":item.get("risk"),"consensus":consensus}; alerts.append(alert)
         if notify: send_alert(alert)
     state["alerts"]=(state.get("alerts",[])+alerts)[-200:]; state["updated_at"]=datetime.now(timezone.utc).isoformat(); _save(state); return {"alerts":alerts,"active_count":surface.get("active_count",0),"scanned":len(surface.get("ips",[]))}
-def run_forever(interval=300,threshold=60):
-    # Notify existing high-risk threats once on the first monitor run. After
-    # a baseline exists, restarts remain quiet and only new/significantly
-    # escalated threats generate Telegram alerts.
-    try:
-        initial_state=_load()
-        first_run=not bool(initial_state.get("seen"))
-        scan_once(threshold=threshold, notify=first_run)
-    except Exception as exc:
-        data=_load(); data.setdefault("alerts",[]).append({"timestamp":datetime.now(timezone.utc).isoformat(),"error":f"startup baseline: {type(exc).__name__}: {exc}"}); data["alerts"]=data["alerts"][-200:]; _save(data)
+def run_forever(interval=300,threshold=60,notify=False):
+    # Keep the legacy default quiet for direct/test callers. The daemon opts
+    # into notifications explicitly on each scheduled scan.
+    scan_once(threshold=threshold, notify=notify)
     while True:
         try: scan_once(threshold=threshold, notify=True)
         except Exception as exc:
             data=_load(); data.setdefault("alerts",[]).append({"timestamp":datetime.now(timezone.utc).isoformat(),"error":f"{type(exc).__name__}: {exc}"}); data["alerts"]=data["alerts"][-200:]; _save(data)
         time.sleep(max(30,interval))
-if __name__=="__main__": run_forever(int(os.getenv("XFI_GUARD_MONITOR_INTERVAL","300")),int(os.getenv("XFI_GUARD_MONITOR_THRESHOLD","60")))
+if __name__=="__main__": run_forever(int(os.getenv("XFI_GUARD_MONITOR_INTERVAL","300")),int(os.getenv("XFI_GUARD_MONITOR_THRESHOLD","60")),notify=True)
