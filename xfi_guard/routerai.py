@@ -26,6 +26,8 @@ class RouterAIAdapter:
         self.api_key = api_key or os.getenv("ROUTERAI_API_KEY") or ""
         self.timeout = timeout
         self.last_error = ""
+        self.last_model = ""
+        self.last_paid = False
         self._models_cache: list[str] = []
         self._models_cache_ts = 0.0
         self._free_cache: list[str] = []
@@ -149,17 +151,19 @@ class RouterAIAdapter:
             self.last_error = "API key not configured"
             return None
 
+        self.last_model = ""
+        self.last_paid = False
         candidates = self.ordered_models(allow_paid=allow_paid)
         if model:
             candidates = [m for m in candidates if m != model]
-            if model in self.models():
-                if allow_paid or model in self.free_models():
-                    candidates.append(model)
+            if model in self.models() and (allow_paid or model in self.free_models()):
+                candidates.append(model)
 
         if not candidates:
             self.last_error = "no RouterAI chat models available"
             return None
 
+        free_set = set(self.free_models(candidates))
         errors: list[str] = []
         for candidate in candidates[:12]:
             try:
@@ -179,6 +183,8 @@ class RouterAIAdapter:
                 content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
                 if content:
                     self.last_error = ""
+                    self.last_model = candidate
+                    self.last_paid = candidate not in free_set
                     return str(content)
                 errors.append(f"{candidate}: empty response")
             except error.HTTPError as exc:
