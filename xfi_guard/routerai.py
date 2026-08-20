@@ -12,9 +12,10 @@ from urllib import error, request
 
 BASE_URL = "https://routerai.ru/api/v1"
 _NON_CHAT_MARKERS = (
-    "embedding", "moderation", "whisper", "tts", "speech", "audio", "music",
-    "lyria", "veo", "flux", "seedance", "seedream", "kling", "sora",
+    "embedding", "moderation", "rerank", "whisper", "tts", "speech", "audio", "music",
+    "lyria", "veo", "flux", "seedance", "seedream", "kling", "sora", "imagine",
     "recraft", "riverflow", "gpt-image", "mai-image", "qwen-image", "gemini-image",
+    "image", "video", "krea", "hailuo", "wan-", "runway",
 )
 
 
@@ -62,11 +63,15 @@ class RouterAIAdapter:
         absence of capability metadata remains compatible with the legacy API.
         """
         apis = endpoint.get("supported_apis")
-        if apis and "chat" not in {str(x).lower() for x in apis}:
-            return False
+        if apis:
+            normalized = {str(x).lower() for x in apis}
+            if not any("chat" in value for value in normalized):
+                return False
         output = endpoint.get("output_modalities")
-        if output and "text" not in {str(x).lower() for x in output}:
-            return False
+        if output:
+            normalized = {str(x).lower() for x in output}
+            if "text" not in normalized:
+                return False
         return True
 
     def _endpoint_info(self, model: str) -> list[dict]:
