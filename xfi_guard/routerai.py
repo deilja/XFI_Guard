@@ -14,7 +14,8 @@ BASE_URL = "https://routerai.ru/api/v1"
 _NON_CHAT_MARKERS = (
     "image", "video", "rerank", "embedding", "moderation", "whisper",
     "tts", "speech", "audio", "music", "lyria", "veo", "flux", "seedance",
-    "seedream", "kling", "sora", "recraft", "riverflow",
+    "seedream", "kling", "sora", "recraft", "riverflow", "happyhorse",
+    "gpt-image", "mai-image", "qwen-image", "gemini-image",
 )
 
 
@@ -142,19 +143,22 @@ class RouterAIAdapter:
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
 
-    def analyze(self, model: str, prompt: str) -> str | None:
-        """Try free RouterAI chat models first, then paid models as fallback."""
+    def analyze(self, model: str, prompt: str, allow_paid: bool = True) -> str | None:
+        """Analyze with free RouterAI chat models first; optionally fall back to paid."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
 
-        candidates = self.ordered_models(allow_paid=True)
-        if model and model in candidates:
-            candidates.remove(model)
-            free = set(self.free_models(candidates))
-            candidates.insert(0, model) if model in free else candidates.append(model)
+        candidates = self.ordered_models(allow_paid=allow_paid)
+        if model:
+            candidates = [m for m in candidates if m != model]
+            if model in self.models():
+                if allow_paid or model in self.free_models():
+                    candidates.append(model)
+
         if not candidates:
-            candidates = [model] if model else []
+            self.last_error = "no RouterAI chat models available"
+            return None
 
         errors: list[str] = []
         for candidate in candidates[:12]:
