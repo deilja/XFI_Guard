@@ -1,9 +1,9 @@
 """RouterAI adapter for XFI Guard.
 
-RouterAI exposes an OpenAI-compatible API. This adapter is intentionally
-standalone so the main AI engine can opt into it without making paid requests
-implicitly. A model is considered eligible only when it has at least one
-working chat endpoint with explicitly zero prompt and completion pricing.
+RouterAI exposes an OpenAI-compatible API. The adapter classifies models by
+actual endpoint pricing/capabilities so XFI Guard can prefer free text-chat
+models and optionally fall back to paid text-chat models when explicitly
+allowed by configuration.
 """
 from __future__ import annotations
 
@@ -53,11 +53,8 @@ class RouterAIAdapter:
             return []
 
     @staticmethod
-    def _is_free_chat_endpoint(endpoint: dict) -> bool:
-        """Return whether an endpoint can serve free text chat requests."""
-        pricing = endpoint.get("pricing") or {}
-        if not (RouterAIAdapter._zero(pricing.get("prompt")) and RouterAIAdapter._zero(pricing.get("completion"))):
-            return False
+    def _is_text_chat_endpoint(endpoint: dict) -> bool:
+        """Return whether an endpoint can serve text through chat completions."""
         try:
             if int(endpoint.get("status", 0) or 0) < 0:
                 return False
@@ -69,18 +66,36 @@ class RouterAIAdapter:
             return False
 
         architecture = endpoint.get("architecture") or {}
+        input_modalities = architecture.get("input_modalities") or []
         output_modalities = architecture.get("output_modalities") or []
+        if input_modalities and "text" not in {str(x).lower() for x in input_modalities}:
+            return False
         if output_modalities and "text" not in {str(x).lower() for x in output_modalities}:
             return False
-
         return True
 
-    def free_models(self, candidates: list[str] | None = None) -> list[str]:
-        """Return only models having an explicitly zero-cost text-chat endpoint."""
-        if not self.configured:
-            return []
-        candidates = candidates or self.models()
-        result: list[str] = []
+    @staticmethod
+    def _is_free_chat_endpoint(endpoint: dict) -> bool:
+        """Return whether an endpoint is a working zero-cost text-chat endpoint."""
+        if not RouterAIAdapter._is_text_chat_endpoint(endpoint):
+            return False
+        pricing = endpoint.get("pricing") or {}
+        return RouterAIAdapter._zero(pricing.get("prompt")) and RouterAIAdapter._zero(pricing.get("completion"))
+
+    @staticmethod
+    def _is_paid_chat_endpoint(endpoint: dict) -> bool:
+        """Return whether an endpoint is text-chat capable and has non-zero cost."""
+        if not RouterAIAdapter._is_text_chat_endpoint(endpoint):
+            return False
+        pricing = endpoint.get("pricing") or {}
+        try:
+            return float(pricing.get("prompt") or 0) > 0 or float(pricing.get("completion") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _classify_models(self, candidates: list[str]) -> tuple[list[str], list[str]]:
+        free: list[str] = []
+        paid: list[str] = []
         for model in candidates:
             if "/" not in model:
                 continue
@@ -89,12 +104,35 @@ class RouterAIAdapter:
                 data = self._request("GET", f"{BASE_URL}/models/{author}/{slug}/endpoints")
                 endpoints = ((data.get("data") or {}).get("endpoints") or [])
                 if any(self._is_free_chat_endpoint(endpoint) for endpoint in endpoints):
-                    result.append(model)
+                    free.append(model)
+                elif any(self._is_paid_chat_endpoint(endpoint) for endpoint in endpoints):
+                    paid.append(model)
             except error.HTTPError as exc:
                 self.last_error = f"{model}: HTTP {exc.code}"
             except Exception as exc:
                 self.last_error = f"{model}: {type(exc).__name__}: {exc}"
-        return list(dict.fromkeys(result))
+        return list(dict.fromkeys(free)), list(dict.fromkeys(paid))
+
+    def free_models(self, candidates: list[str] | None = None) -> list[str]:
+        """Return only models having an explicitly zero-cost text-chat endpoint."""
+        if not self.configured:
+            return []
+        free, _ = self._classify_models(candidates or self.models())
+        return free
+
+    def paid_models(self, candidates: list[str] | None = None) -> list[str]:
+        """Return text-chat models with non-zero pricing."""
+        if not self.configured:
+            return []
+        _, paid = self._classify_models(candidates or self.models())
+        return paid
+
+    def text_models(self, candidates: list[str] | None = None, include_paid: bool = True) -> list[str]:
+        """Return free text models first, then paid text models when allowed."""
+        if not self.configured:
+            return []
+        free, paid = self._classify_models(candidates or self.models())
+        return list(dict.fromkeys(free + (paid if include_paid else [])))
 
     @staticmethod
     def _zero(value) -> bool:
@@ -133,11 +171,7 @@ class RouterAIAdapter:
         return None
 
     def health(self, model: str) -> tuple[bool, str]:
-        """Probe a model with one output token.
-
-        The caller must first establish that the model has a zero-cost chat
-        endpoint when enforcing the global free-only policy.
-        """
+        """Probe a caller-approved text-chat model with one output token."""
         if not self.configured:
             return False, "API key not configured"
         try:
@@ -164,7 +198,7 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str) -> str | None:
-        """Analyze using a caller-approved free text-chat model only."""
+        """Analyze using a caller-approved text-chat model."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
