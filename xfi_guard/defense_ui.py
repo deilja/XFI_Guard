@@ -45,16 +45,6 @@ def _confirm_keyboard(action: str, ip: str):
     ]])
 
 
-def _critical_keyboard(items):
-    rows = []
-    for item in items[:20]:
-        ip = str(item.get("ip", ""))
-        score = int(item.get("risk_score", 0) or 0)
-        if ip:
-            rows.append([InlineKeyboardButton(text=f"🚫 {ip} — CRITICAL {score}/100", callback_data=f"manual:block:{ip}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
-
-
 def _critical_candidates():
     data = collect_attack_surface()
     blocked = set(list_blocked_ips())
@@ -66,6 +56,43 @@ def _critical_candidates():
         if ip and ip not in blocked and (risk == "critical" or score >= 80):
             result.append(item)
     return sorted(result, key=lambda x: int(x.get("risk_score", 0) or 0), reverse=True)
+
+
+def _defense_text():
+    blocked = list_blocked_ips()
+    critical = _critical_candidates()
+    lines = [
+        "🚫 Управление блокировкой IP",
+        "",
+        f"🔒 Заблокировано: {len(blocked)}",
+        f"🚨 Критических к блокировке: {len(critical)}",
+        "",
+    ]
+    if blocked:
+        lines.append("🔒 Текущие блокировки:")
+        lines.extend(f"• {ip}" for ip in blocked[:15])
+        if len(blocked) > 15:
+            lines.append(f"… ещё {len(blocked) - 15}")
+        lines.append("")
+    if critical:
+        lines.append("🚨 Критические угрозы:")
+        lines.extend(f"• {x.get('ip')} — {str(x.get('risk','critical')).upper()} {int(x.get('risk_score',0) or 0)}/100" for x in critical[:15])
+    else:
+        lines.append("✅ Критических угроз для блокировки нет.")
+    return "\n".join(lines)[:3900]
+
+
+def _defense_inline():
+    critical = _critical_candidates()
+    rows = []
+    if critical:
+        rows.append([InlineKeyboardButton(text=f"🚨 Заблокировать все критические ({len(critical)})", callback_data="manual:block_all_critical")])
+        for item in critical[:8]:
+            ip = str(item.get("ip", "")); score = int(item.get("risk_score", 0) or 0)
+            if ip:
+                rows.append([InlineKeyboardButton(text=f"🚫 {ip} — {score}/100", callback_data=f"manual:block:{ip}")])
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="manual:refresh_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _wire_bot_audit() -> None:
@@ -90,7 +117,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
     async def defense_ip_menu(m, state: FSMContext):
         if not _admin(m): return
         await state.clear()
-        await m.answer("🚫 Управление блокировкой IP\n\nТолько ручное действие администратора. AI не блокирует IP автоматически.", reply_markup=defense_menu())
+        await m.answer(_defense_text(), reply_markup=defense_menu())
 
     @dp.message(F.text == "🔴 Заблокировать IP")
     async def block_prompt(m, state: FSMContext):
@@ -103,7 +130,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
         if not _admin(m): return
         value=(m.text or "").strip()
         if value in {"❌ Отмена", "⬅️ Главное меню"}:
-            await state.clear(); await m.answer("Отменено.", reply_markup=defense_menu()); return
+            await state.clear(); await m.answer(_defense_text(), reply_markup=defense_menu()); return
         try: ip=validate_public_ip(value)
         except ValueError as exc:
             await m.answer(f"❌ {exc}\n\nВведите публичный IPv4 ещё раз."); return
@@ -116,7 +143,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
         items=list_blocked_ips()
         await state.clear()
         if not items:
-            await m.answer("🟢 Заблокированных публичных IP не найдено.", reply_markup=defense_menu()); return
+            await m.answer(_defense_text(), reply_markup=defense_menu()); return
         await m.answer("🟢 Выберите IP для разблокировки:", reply_markup=_kb([[f"🟢 {ip}"] for ip in items[:40]]+[["⬅️ Главное меню"]]))
         await state.set_state(DefenseStates.unblock_ip)
 
@@ -124,7 +151,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
     async def unblock_input(m, state: FSMContext):
         if not _admin(m): return
         value=(m.text or "").strip()
-        if value == "⬅️ Главное меню": await state.clear(); await m.answer("Отменено.", reply_markup=defense_menu()); return
+        if value == "⬅️ Главное меню": await state.clear(); await m.answer(_defense_text(), reply_markup=defense_menu()); return
         if value.startswith("🟢 "): value=value[2:].strip()
         try: ip=validate_public_ip(value)
         except ValueError as exc: await m.answer(f"❌ {exc}"); return
@@ -137,8 +164,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
         await state.clear()
         items = _critical_candidates()
         if not items:
-            await m.answer("🚨 Критических угроз для блокировки сейчас нет.", reply_markup=defense_menu())
-            return
+            await m.answer(_defense_text(), reply_markup=defense_menu()); return
         ips = [str(x.get("ip")) for x in items]
         preview = "\n".join(f"• {x.get('ip')} — {x.get('risk','critical').upper()} {int(x.get('risk_score',0) or 0)}/100" for x in items[:20])
         await m.answer(f"⚠️ Подтвердите массовую блокировку\n\nБудут заблокированы все текущие критические IP ({len(ips)}):\n\n{preview}\n\nДействие выполнит UFW DENY.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -150,14 +176,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
     async def refresh_defense(m, state: FSMContext):
         if not _admin(m): return
         await state.clear()
-        items = _critical_candidates()
-        text = "🚫 Управление блокировкой IP\n\n"
-        text += f"Критических угроз: {len(items)}\n"
-        if items:
-            text += "\n".join(f"• {x.get('ip')} — {x.get('risk','critical').upper()} {int(x.get('risk_score',0) or 0)}/100" for x in items[:20])
-        else:
-            text += "Критических угроз для блокировки нет."
-        await m.answer(text, reply_markup=defense_menu())
+        await m.answer(_defense_text(), reply_markup=defense_menu())
 
     @dp.callback_query(F.data.startswith("manual:"))
     async def manual_action(callback):
@@ -168,26 +187,27 @@ def install_defense_handlers(dp: Dispatcher) -> None:
         if len(parts)<2: await callback.answer("Некорректное действие", show_alert=True); return
         if parts[1]=="cancel":
             await callback.answer("Отменено")
-            try: await callback.message.edit_text("🚫 Действие отменено.", reply_markup=defense_menu())
+            try: await callback.message.edit_text(_defense_text(), reply_markup=defense_menu())
+            except Exception: pass
+            return
+        if parts[1]=="refresh_menu":
+            await callback.answer("Обновлено")
+            try: await callback.message.edit_text(_defense_text(), reply_markup=_defense_inline())
             except Exception: pass
             return
         if parts[1]=="block_all_critical":
-            items=_critical_candidates()
-            ok_count=0; failed=[]
+            items=_critical_candidates(); ok_count=0; failed=[]
             for item in items:
                 ip=str(item.get("ip",""))
                 try:
                     ok,msg=confirm_block(ip,actor=str(uid),reason="Manual bulk block of all critical threats",metadata={"risk_score":item.get("risk_score"),"risk":item.get("risk")})
                     if ok: ok_count += 1
                     else: failed.append(f"{ip}: {msg}")
-                except (ValueError,OSError) as exc:
-                    failed.append(f"{ip}: {exc}")
-            remaining=_critical_candidates()
-            result=f"🚨 Массовая блокировка завершена\n\nЗаблокировано: {ok_count}\nОшибок: {len(failed)}\nОсталось критических: {len(remaining)}"
-            if failed: result += "\n\n" + "\n".join(failed[:10])
+                except (ValueError,OSError) as exc: failed.append(f"{ip}: {exc}")
             await callback.answer("Готово" if not failed else "Завершено с ошибками", show_alert=True)
-            try: await callback.message.edit_text(result, reply_markup=defense_menu())
-            except Exception: await callback.message.answer(result, reply_markup=defense_menu())
+            result=_defense_text()+f"\n\nРезультат: заблокировано {ok_count}, ошибок {len(failed)}"
+            try: await callback.message.edit_text(result[:3900], reply_markup=_defense_inline())
+            except Exception: pass
             return
         if len(parts)!=3: await callback.answer("Некорректный IP", show_alert=True); return
         action,ip=parts[1],parts[2]
@@ -197,14 +217,13 @@ def install_defense_handlers(dp: Dispatcher) -> None:
             else: ok,message=False,"Неизвестное действие"
         except (ValueError,OSError) as exc: ok,message=False,str(exc)
         await callback.answer("Выполнено" if ok else "Ошибка", show_alert=True)
-        try: await callback.message.edit_text(("✅ " if ok else "❌ ")+message, reply_markup=defense_menu())
+        try: await callback.message.edit_text(("✅ " if ok else "❌ ")+message+"\n\n"+_defense_text(), reply_markup=_defense_inline())
         except Exception: pass
 
     @dp.message(F.text == "📋 Заблокированные IP")
     async def blocked_list(m):
         if not _admin(m): return
-        items=list_blocked_ips(); text="\n".join(f"• {ip}" for ip in items) if items else "Нет ручных блокировок публичных IP."
-        await m.answer("📋 Заблокированные IP\n\n"+text[:3800], reply_markup=defense_menu())
+        await m.answer(_defense_text(), reply_markup=defense_menu())
 
     @dp.message(F.text == "🧮 Рейтинг угроз")
     async def threat_ranking_button(m):
@@ -221,8 +240,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
     @dp.message(F.text == "📜 История защиты")
     async def defense_history_button(m):
         if not _admin(m): return
-        items=history(30)
-        text="История защиты пуста." if not items else "\n".join(f"• {x.get('timestamp','')[:19]} | {x.get('action','')} | {x.get('ip','-')} | {x.get('actor','admin')}\n  {x.get('reason','')[:180]}" for x in reversed(items))
+        items=history(30); text="История защиты пуста." if not items else "\n".join(f"• {x.get('timestamp','')[:19]} | {x.get('action','')} | {x.get('ip','-')} | {x.get('actor','admin')}\n  {x.get('reason','')[:180]}" for x in reversed(items))
         await m.answer("📜 История защиты\n\n"+text[:3800], reply_markup=defense_menu())
 
     @dp.message(Command("defense_history"))
