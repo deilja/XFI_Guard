@@ -23,8 +23,10 @@ def record(provider,model,ok,latency_ms,error_text=""):
 def snapshot(): return _read().get("providers",{})
 
 def adapt_weights(min_weight=0.25,max_weight=1.5):
-    cfg=load(); current={p:1.0 for p in PROVIDERS}; current.update(cfg.get("ai_weights") or {}); groups={k:[] for k in current}
-    for key,val in snapshot().items(): groups.setdefault(key.split(":",1)[0],[]).append(val)
+    cfg=load(); current={p:1.0 for p in PROVIDERS}; current.update(cfg.get("ai_weights") or {}); groups={p:[] for p in PROVIDERS}
+    for key,val in snapshot().items():
+        provider=key.split(":",1)[0]
+        if provider in groups: groups[provider].append(val)
     for provider,items in groups.items():
         if items:
             success=sum(x.get("success_rate",0) for x in items)/len(items); current[provider]=round(max(min_weight,min(max_weight,current.get(provider,1.0)*(0.5+success))),3)
@@ -32,11 +34,11 @@ def adapt_weights(min_weight=0.25,max_weight=1.5):
 
 def run_health_check():
     analyzer=AIAnalyzer(); results=[]
+    models={"gemini":analyzer.gemini.model,"groq":analyzer.groq_model,"openrouter":analyzer.openrouter_model}
     for provider in PROVIDERS:
         if not analyzer._has_key(provider):
-            results.append({"provider":provider,"model":"-","ok":False,"latency_ms":0,"error":"API-ключ не настроен"}); continue
-        model={"gemini":analyzer.gemini.model,"groq":analyzer.groq_model,"openrouter":analyzer.openrouter_model,"deepseek":analyzer.deepseek_model}[provider]
-        started=time.monotonic(); ok=False; err=""
+            results.append({"provider":provider,"model":models[provider],"ok":False,"latency_ms":0,"error":"API-ключ не настроен"}); continue
+        model=models[provider]; started=time.monotonic(); ok=False; err=""
         try:
             checked=analyzer.check_provider(provider,force=True); ok=bool(checked.get("ok")); err=checked.get("error","")
         except Exception as exc: err=f"{type(exc).__name__}: {exc}"
