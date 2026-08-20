@@ -34,10 +34,22 @@ def load(path: str = DEFAULT_PATH) -> dict:
             return defaults.model_dump()
         if raw.get("groq_model") in LEGACY_GROQ_MODELS:
             raw = {**raw, "groq_model": LEGACY_GROQ_MODELS[raw["groq_model"]]}
-        # Paid/removed providers are intentionally discarded on load.
+
+        # DeepSeek is intentionally removed: XFI Guard uses only the
+        # configured/free providers required by the current architecture.
         raw.pop("deepseek_key", None)
         raw.pop("deepseek_model", None)
+
         merged = {**defaults.model_dump(), **raw}
+
+        # RouterAI is opt-in by API key, not by a second hidden switch.
+        # If a valid RouterAI key has been saved but an older ai.json still
+        # contains routerai_enabled=false, automatically activate the free-
+        # only RouterAI adapter. Paid models remain disabled independently.
+        if merged.get("routerai_key") and not merged.get("routerai_enabled"):
+            merged["routerai_enabled"] = True
+        merged["routerai_allow_paid"] = False
+
         return AISettings.model_validate(merged).model_dump()
     except (OSError, json.JSONDecodeError, ValueError):
         return defaults.model_dump()
@@ -47,6 +59,12 @@ def save(data: dict, path: str = DEFAULT_PATH) -> None:
     data = dict(data)
     data.pop("deepseek_key", None)
     data.pop("deepseek_model", None)
+
+    # XFI Guard currently permits RouterAI only in free-model mode.
+    data["routerai_allow_paid"] = False
+    if data.get("routerai_key"):
+        data["routerai_enabled"] = True
+
     settings = AISettings.model_validate(data)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
