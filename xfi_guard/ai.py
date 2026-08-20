@@ -242,6 +242,7 @@ class AIAnalyzer:
                 if not result:
                     raise RuntimeError(self.gemini.last_error or "empty response")
                 self._success(key)
+                self.last_provider, self.last_model = provider, model
                 return result
             except Exception as exc:
                 self._failure(key, 300)
@@ -251,9 +252,10 @@ class AIAnalyzer:
             key = f"routerai:{model}"
             if not self._healthy(key):
                 return None
-            result = self.routerai.analyze(model, prompt)
+            result = self.routerai.analyze(model, prompt, allow_paid=self.routerai_allow_paid)
             if result:
                 self._success(key)
+                self.last_provider, self.last_model = provider, model
                 return result
             self._failure(key, 300)
             self._set_provider_error("routerai", self.routerai.last_error or f"{model}: empty response")
@@ -276,6 +278,7 @@ class AIAnalyzer:
                 result = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
                 if result:
                     self._success(f"{provider}:{candidate}")
+                    self.last_provider, self.last_model = provider, candidate
                     return result
                 raise RuntimeError("empty response")
             except error.HTTPError as exc:
@@ -289,6 +292,11 @@ class AIAnalyzer:
                 self._failure(f"{provider}:{candidate}")
                 self._set_provider_error(provider, f"{candidate}: {type(exc).__name__}: {exc}")
         return None
+
+    def analyze(self, event):
+        """Compatibility/public single-analysis API backed by consensus engine."""
+        result = self.analyze_consensus(event)
+        return result.get("winner", "unknown") if isinstance(result, dict) else None
 
     def _jobs(self):
         jobs = []
