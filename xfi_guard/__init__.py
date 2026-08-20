@@ -4,7 +4,14 @@ __version__ = "1.1.0"
 
 
 def _install_ai_analyzer_compat() -> None:
-    """Expose a stable direct-analysis API with provider fallback."""
+    """Expose a stable direct-analysis API with provider fallback.
+
+    Older integrations import ``AIAnalyzer`` and call ``analyze()`` directly.
+    Keep that API compatible while preferring explicitly configured models and
+    using model discovery only as an additional fallback. This is important
+    when discovery is temporarily unavailable but a known working model is
+    already configured.
+    """
     from .ai import AIAnalyzer
 
     def _analyze_groq(self, event):
@@ -13,6 +20,18 @@ def _install_ai_analyzer_compat() -> None:
         if not model or not self.groq_key:
             return None
         return self._call("groq", model, prompt)
+
+    def _configured_models(self, provider):
+        """Return configured models before attempting network discovery."""
+        if provider == "gemini":
+            return [self.gemini_model] if self.gemini_model else []
+        if provider == "groq":
+            return [self.groq_model] if self.groq_model else []
+        if provider == "openrouter":
+            return [self.openrouter_model, *self.openrouter_models]
+        if provider == "routerai":
+            return [self.routerai_model, *self.routerai_models]
+        return []
 
     def analyze(self, event):
         """Run one AI request using configured providers in free-first order.
@@ -35,7 +54,7 @@ def _install_ai_analyzer_compat() -> None:
         for provider in order:
             try:
                 if provider == "groq":
-                    result = self._analyze_groq(event)
+                    result = _analyze_groq(self, event)
                     if result:
                         self.last_provider = provider
                         self.last_model = self.groq_model
@@ -46,7 +65,17 @@ def _install_ai_analyzer_compat() -> None:
                         errors.append(provider_error)
                     continue
 
-                models = self._models_for(provider)
+                # A configured model must remain usable even if model discovery
+                # is temporarily unavailable. Discovery is only supplemental.
+                configured_models = self._configured_models(provider)
+                discovered_models = []
+                if not configured_models:
+                    discovered_models = self._models_for(provider)
+                models = list(dict.fromkeys([
+                    *configured_models,
+                    *discovered_models,
+                ]))
+                models = [m for m in models if m]
                 if not models:
                     errors.append(f"{provider}: no model available")
                     continue
