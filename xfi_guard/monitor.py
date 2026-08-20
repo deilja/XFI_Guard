@@ -61,6 +61,7 @@ def _notify_auto_blocks(results: list[dict]) -> None:
                 f"Причина: SSH brute-force\n"
                 f"Попыток: {item['attempts']}\n"
                 f"Уровень: {str(item['risk']).upper()}\n"
+                f"Режим AI: {item.get('analysis_mode', 'unknown')}\n"
                 f"Уверенность AI: {item['confidence']:.0%}\n\n"
                 f"{item.get('message', 'IP автоматически заблокирован UFW.')}"
             )
@@ -79,6 +80,12 @@ def _notify_ai_consensus(event: dict, result: dict) -> None:
     if risk not in {"high", "critical"}:
         return
     providers = ", ".join(result.get("providers", [])) or "нет"
+    providers_used = int(result.get("providers_used", 0) or 0)
+    mode = (
+        "FULL CONSENSUS" if providers_used >= 3 and result.get("consensus") else
+        "PARTIAL CONSENSUS" if providers_used >= 2 and result.get("consensus") else
+        "FALLBACK" if providers_used == 1 else "UNAVAILABLE"
+    )
     verdict_lines = []
     for item in result.get("verdicts", [])[:3]:
         verdict_lines.append(
@@ -86,11 +93,13 @@ def _notify_ai_consensus(event: dict, result: dict) -> None:
         )
     ip = event.get("ip") or event.get("source_ip") or "не определён"
     notify(
-        "🚨 XFI Guard — AI КОНСЕНСУС\n\n"
+        "🚨 XFI Guard — AI АНАЛИЗ\n\n"
         f"IP: {ip}\n"
         f"Угроза: {risk.upper()}\n"
-        f"Общая уверенность: {result.get('confidence', 0):.0%}\n"
-        f"Согласие AI: {result.get('agreement', 0):.0%}\n"
+        f"Режим: {mode}\n"
+        f"AI: {providers_used}/{len(result.get('configured_providers', [])) or 3}\n"
+        f"Уверенность: {result.get('confidence', 0):.0%}\n"
+        f"Согласие: {result.get('agreement', 0):.0%}\n"
         f"Провайдеры: {providers}\n\n"
         + "\n".join(verdict_lines)
     )
@@ -100,9 +109,6 @@ def run_forever(config: MonitorConfig) -> None:
     running = True
     state = StateStore(config.state_file)
     alerts = AlertManager(cooldown=config.telegram_cooldown_seconds) if config.telegram_enabled else None
-    # AIAnalyzer itself loads all configured providers and runs consensus.
-    # Do not pin the monitor to one provider: that silently disables the other
-    # two providers during event analysis.
     ai = AIAnalyzer()
     auto_blocker = AutoBlocker(
         enabled=config.auto_block_enabled,
@@ -130,17 +136,25 @@ def run_forever(config: MonitorConfig) -> None:
                 result = ai.analyze_consensus(event)
                 event["ai_consensus"] = result
                 event["ai_provider"] = ",".join(result.get("providers", []))
+                event["ai_mode"] = (
+                    "full_consensus" if result.get("providers_used", 0) >= 3 and result.get("consensus") else
+                    "partial_consensus" if result.get("providers_used", 0) >= 2 and result.get("consensus") else
+                    "fallback" if result.get("providers_used", 0) == 1 else "unavailable"
+                )
                 if result.get("verdicts"):
                     event["ai_risk"] = result.get("winner")
                     event["ai_confidence"] = result.get("confidence", 0)
                 LOG.info(
-                    "AI consensus: event=%s providers=%s risk=%s confidence=%.2f degraded=%s",
+                    "AI consensus: event=%s providers=%s risk=%s confidence=%.2f mode=%s degraded=%s errors=%s",
                     event.get("event_type"), result.get("providers", []),
-                    result.get("winner"), result.get("confidence", 0), result.get("degraded", False),
+                    result.get("winner"), result.get("confidence", 0), event["ai_mode"],
+                    result.get("degraded", False), list((result.get("provider_errors") or {}).keys()),
                 )
                 _notify_ai_consensus(event, result)
 
         if events:
+            # AutoBlocker reuses event["ai_consensus"], so one security event
+            # produces exactly one AI consensus request and one source of truth.
             defense_results = auto_blocker.evaluate(events)
             if defense_results:
                 write_snapshot(config.output_file, snapshot, events + [{"event_type": "auto_defense", **item} for item in defense_results])
