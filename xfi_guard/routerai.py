@@ -32,10 +32,7 @@ class RouterAIAdapter:
         return bool(self.api_key)
 
     def _request(self, method: str, url: str, payload: dict | None = None) -> dict:
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "XFI-Guard/1.6",
-        }
+        headers = {"Accept": "application/json", "User-Agent": "XFI-Guard/1.6"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         data = None
@@ -67,17 +64,14 @@ class RouterAIAdapter:
 
     @staticmethod
     def _is_text_chat_endpoint(endpoint: dict) -> bool:
-        """Return whether an endpoint can serve text through chat completions."""
         try:
             if int(endpoint.get("status", 0) or 0) < 0:
                 return False
         except (TypeError, ValueError):
             return False
-
         supported_apis = endpoint.get("supported_apis") or []
         if supported_apis and "chat" not in {str(x).lower() for x in supported_apis}:
             return False
-
         architecture = endpoint.get("architecture") or {}
         input_modalities = architecture.get("input_modalities") or []
         output_modalities = architecture.get("output_modalities") or []
@@ -89,7 +83,6 @@ class RouterAIAdapter:
 
     @staticmethod
     def _is_free_chat_endpoint(endpoint: dict) -> bool:
-        """Return whether an endpoint is a working zero-cost text-chat endpoint."""
         if not RouterAIAdapter._is_text_chat_endpoint(endpoint):
             return False
         pricing = endpoint.get("pricing") or {}
@@ -97,7 +90,6 @@ class RouterAIAdapter:
 
     @staticmethod
     def _is_paid_chat_endpoint(endpoint: dict) -> bool:
-        """Return whether an endpoint is text-chat capable and has non-zero cost."""
         if not RouterAIAdapter._is_text_chat_endpoint(endpoint):
             return False
         pricing = endpoint.get("pricing") or {}
@@ -142,10 +134,13 @@ class RouterAIAdapter:
         if not self.configured:
             return []
         if candidates is None:
-            self._ensure_classification()
-            return list(self._free_models)
-        free, paid = self._classify_models(candidates)
-        self._set_classification(free, paid)
+            if self._free_models and time.monotonic() - self._classification_ts < 300:
+                return list(self._free_models)
+            free, _paid = self._classify_models(self._raw_models())
+            self._set_classification(free, [])
+            return free
+        free, _paid = self._classify_models(candidates)
+        self._set_classification(free, [])
         return free
 
     def paid_models(self, candidates: list[str] | None = None) -> list[str]:
@@ -165,7 +160,7 @@ class RouterAIAdapter:
             self._ensure_classification()
             return list(self._free_models) + (list(self._paid_models) if include_paid else [])
         free, paid = self._classify_models(candidates)
-        self._set_classification(free, paid)
+        self._set_classification(free, paid if include_paid else [])
         return free + (paid if include_paid else [])
 
     @staticmethod
@@ -236,7 +231,6 @@ class RouterAIAdapter:
         if not self.configured:
             self.last_error = "API key not configured"
             return None
-
         self._ensure_classification()
         candidates = list(dict.fromkeys([*self._free_models, model, *self._paid_models]))
         last_error = ""
@@ -269,6 +263,5 @@ class RouterAIAdapter:
                 last_error = f"{candidate}: HTTP {exc.code}: {detail}"
             except Exception as exc:
                 last_error = f"{candidate}: {type(exc).__name__}: {exc}"
-
         self.last_error = last_error or "empty response"
         return None
