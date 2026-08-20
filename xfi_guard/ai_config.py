@@ -19,7 +19,8 @@ class AISettings(BaseModel):
     routerai_model: str = ""
     routerai_models: tuple[str, ...] = ()
     routerai_enabled: bool = False
-    routerai_allow_paid: bool = False
+    # Paid RouterAI is an explicit fallback after verified free chat models.
+    routerai_allow_paid: bool = True
     gemini_key: str = ""
     groq_key: str = ""
     openrouter_key: str = ""
