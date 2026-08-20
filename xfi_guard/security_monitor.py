@@ -33,12 +33,13 @@ def scan_once(threshold=60,max_ips=5,notify=True):
         if notify: send_alert(alert)
     state["alerts"]=(state.get("alerts",[])+alerts)[-200:]; state["updated_at"]=datetime.now(timezone.utc).isoformat(); _save(state); return {"alerts":alerts,"active_count":surface.get("active_count",0),"scanned":len(surface.get("ips",[]))}
 def run_forever(interval=300,threshold=60):
-    # Establish a durable baseline after every process/host restart. Existing
-    # threats are recorded but are not re-notified just because the service
-    # started again. New threats or a significant risk increase are still
-    # reported by the normal scan loop.
+    # Notify existing high-risk threats once on the first monitor run. After
+    # a baseline exists, restarts remain quiet and only new/significantly
+    # escalated threats generate Telegram alerts.
     try:
-        scan_once(threshold=threshold, notify=False)
+        initial_state=_load()
+        first_run=not bool(initial_state.get("seen"))
+        scan_once(threshold=threshold, notify=first_run)
     except Exception as exc:
         data=_load(); data.setdefault("alerts",[]).append({"timestamp":datetime.now(timezone.utc).isoformat(),"error":f"startup baseline: {type(exc).__name__}: {exc}"}); data["alerts"]=data["alerts"][-200:]; _save(data)
     while True:
