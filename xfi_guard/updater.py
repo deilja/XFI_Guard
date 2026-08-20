@@ -136,13 +136,49 @@ def restore_local_changes(stash: str) -> None:
     run("git", "stash", "drop", stash, check=False, timeout=30)
 
 
-def acquire_lock() -> bool:
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0: return False
     try:
-        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600); os.write(fd, str(os.getpid()).encode()); os.close(fd); return True
-    except FileExistsError: return False
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _read_lock_pid() -> int | None:
+    try:
+        raw = LOCK_FILE.read_text(encoding="utf-8").strip()
+        pid = int(raw)
+        return pid if pid > 0 else None
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+
+def acquire_lock() -> bool:
+    """Acquire lock; recover only locks with no live owner."""
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle: handle.write(str(os.getpid()))
+        return True
+    except FileExistsError:
+        pid = _read_lock_pid()
+        if pid is not None and _pid_alive(pid): return False
+        try: LOCK_FILE.unlink()
+        except FileNotFoundError: pass
+        except OSError: return False
+        try:
+            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle: handle.write(str(os.getpid()))
+            return True
+        except FileExistsError: return False
 
 
 def release_lock() -> None:
+    pid = _read_lock_pid()
+    if pid != os.getpid(): return
     try: LOCK_FILE.unlink()
     except FileNotFoundError: pass
 
