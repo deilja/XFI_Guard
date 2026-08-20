@@ -19,9 +19,9 @@ class AISettings(BaseModel):
     routerai_model: str = ""
     routerai_models: tuple[str, ...] = ()
     routerai_enabled: bool = False
-    # Paid RouterAI is available only as an explicit opt-in fallback.
-    # Free chat-capable models are always tried first when paid fallback is enabled.
-    routerai_allow_paid: bool = False
+    # RouterAI uses every model visible to the account. Free endpoints are
+    # always preferred; paid endpoints are allowed as fallback by default.
+    routerai_allow_paid: bool = True
     gemini_key: str = ""
     groq_key: str = ""
     openrouter_key: str = ""
@@ -42,8 +42,6 @@ class AISettings(BaseModel):
             if model and model not in seen:
                 seen.add(model)
                 result.append(model)
-            if len(result) >= 50:
-                break
         return tuple(result)
 
     @field_validator("ai_weights")
