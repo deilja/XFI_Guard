@@ -75,16 +75,26 @@ def adapt_weights(min_weight=0.25, max_weight=1.5):
 
 
 def _configured(analyzer, provider):
-    """Use the public provider list when available; support lightweight test doubles."""
+    """Resolve provider configuration without requiring private analyzer APIs."""
     try:
-        return provider in analyzer.available_providers()
-    except AttributeError:
-        return provider in {
-            "gemini" if getattr(getattr(analyzer, "gemini", None), "enabled", lambda: False)() else "",
-            "groq" if getattr(analyzer, "groq_key", "") else "",
-            "openrouter" if getattr(analyzer, "openrouter_key", "") else "",
-            "routerai" if getattr(analyzer, "routerai_key", "") and getattr(analyzer, "routerai_enabled", False) else "",
-        }
+        available = analyzer.available_providers()
+        return provider in available
+    except (AttributeError, TypeError):
+        pass
+
+    if provider == "gemini":
+        gemini = getattr(analyzer, "gemini", None)
+        enabled = getattr(gemini, "enabled", None)
+        return bool(enabled() if callable(enabled) else getattr(analyzer, "gemini_key", ""))
+    if provider == "groq":
+        return bool(getattr(analyzer, "groq_key", ""))
+    if provider == "openrouter":
+        return bool(getattr(analyzer, "openrouter_key", ""))
+    if provider == "routerai":
+        return bool(getattr(analyzer, "routerai_key", "")) and bool(
+            getattr(analyzer, "routerai_enabled", False)
+        )
+    return False
 
 
 def run_health_check():
@@ -102,6 +112,7 @@ def run_health_check():
         ),
         "routerai": getattr(analyzer, "routerai_model", ""),
     }
+
     for provider in PROVIDERS:
         model = models[provider]
         if not _configured(analyzer, provider):
@@ -127,7 +138,7 @@ def run_health_check():
                     provider, model, "Ответь OK", json_mode=True, force=True
                 )
                 ok = bool(checked)
-                err = analyzer.last_error if not ok else ""
+                err = getattr(analyzer, "last_error", "") if not ok else ""
             else:
                 checked = analyzer._call(
                     provider,
@@ -135,7 +146,7 @@ def run_health_check():
                     'Ответь только JSON: {"risk":"low","confidence":1,"reason":"health check"}',
                 ) if model else None
                 ok = bool(checked)
-                err = analyzer.last_error if not ok else ""
+                err = getattr(analyzer, "last_error", "") if not ok else ""
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
 
