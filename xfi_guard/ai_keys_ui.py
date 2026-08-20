@@ -15,11 +15,7 @@ class AIKeyState(StatesGroup):
 
 
 def _kb(rows):
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows], resize_keyboard=True, is_persistent=True)
 
 
 def _admin(message) -> bool:
@@ -41,67 +37,36 @@ def install_ai_key_handlers(dp: Dispatcher) -> None:
 
     @dp.message(F.text == "🔑 API ключи")
     async def keys_menu(message, state: FSMContext):
-        if not _admin(message):
-            return
+        if not _admin(message): return
         await state.clear()
         cfg = load()
         await message.answer(
-            "🔑 API КЛЮЧИ\n\n"
-            "Ключи хранятся локально в /var/lib/xfi-guard/ai.json с правами 600.\n\n"
+            "🔑 API КЛЮЧИ\n\nКлючи хранятся локально в /var/lib/xfi-guard/ai.json с правами 600.\n\n"
             f"🟣 Gemini: {_mask(cfg.get('gemini_key') or os.getenv('GEMINI_API_KEY', ''))}\n"
             f"🟢 Groq: {_mask(cfg.get('groq_key') or os.getenv('GROQ_API_KEY', ''))}\n"
-            f"🔵 OpenRouter: {_mask(cfg.get('openrouter_key') or os.getenv('OPENROUTER_API_KEY', ''))}",
-            reply_markup=_kb([
-                ["🔑 Gemini", "🔑 Groq"],
-                ["🔑 OpenRouter"],
-                ["🧩 API модели"],
-                ["⬅️ AI"],
-            ]),
+            f"🔵 OpenRouter: {_mask(cfg.get('openrouter_key') or os.getenv('OPENROUTER_API_KEY', ''))}\n"
+            f"⚫ DeepSeek: {_mask(cfg.get('deepseek_key') or os.getenv('DEEPSEEK_API_KEY', ''))}",
+            reply_markup=_kb([["🔑 Gemini", "🔑 Groq"], ["🔑 OpenRouter", "🔑 DeepSeek"], ["🧩 API модели"], ["⬅️ AI"]]),
         )
 
     async def ask_key(message, state: FSMContext, provider: str):
-        if not _admin(message):
-            return
+        if not _admin(message): return
         await state.set_state(AIKeyState.waiting)
         await state.update_data(provider=provider)
-        await message.answer(
-            f"🔑 {provider.upper()} API\n\n"
-            "Отправьте API key одним сообщением.\n"
-            "Он сохранится локально и будет проверен при выборе модели.\n\n"
-            "Для отмены: ⬅️ AI",
-            reply_markup=_kb([["⬅️ AI"]]),
-        )
+        await message.answer(f"🔑 {provider.upper()} API\n\nОтправьте API key одним сообщением.\nОн сохранится локально и будет проверен при выборе модели.\n\nДля отмены: ⬅️ AI", reply_markup=_kb([["⬅️ AI"]]))
 
-    @dp.message(F.text == "🔑 Gemini")
-    async def gemini_key(message, state):
-        await ask_key(message, state, "gemini")
-
-    @dp.message(F.text == "🔑 Groq")
-    async def groq_key(message, state):
-        await ask_key(message, state, "groq")
-
-    @dp.message(F.text == "🔑 OpenRouter")
-    async def openrouter_key(message, state):
-        await ask_key(message, state, "openrouter")
+    for label, provider in (("🔑 Gemini", "gemini"), ("🔑 Groq", "groq"), ("🔑 OpenRouter", "openrouter"), ("🔑 DeepSeek", "deepseek")):
+        @dp.message(F.text == label)
+        async def provider_key(message, state, _provider=provider):
+            await ask_key(message, state, _provider)
 
     @dp.message(AIKeyState.waiting)
     async def receive_key(message, state: FSMContext):
-        if not _admin(message):
-            return
+        if not _admin(message): return
         text = (message.text or "").strip()
-        if not text or text.startswith("/"):
-            return
-        data = await state.get_data()
-        provider = data.get("provider")
-        if provider not in {"gemini", "groq", "openrouter"}:
-            await state.clear()
-            return
-        cfg = load()
-        cfg[f"{provider}_key"] = text
-        save(cfg)
-        await state.clear()
-        await message.answer(
-            f"✅ {provider.upper()} API key сохранён.\n\n"
-            "Теперь откройте 🧩 API модели и получите актуальный список моделей через API.",
-            reply_markup=_kb([["🔑 API ключи", "🧩 API модели"], ["⬅️ AI"]]),
-        )
+        if not text or text.startswith("/"): return
+        data = await state.get_data(); provider = data.get("provider")
+        if provider not in {"gemini", "groq", "openrouter", "deepseek"}:
+            await state.clear(); return
+        cfg = load(); cfg[f"{provider}_key"] = text; save(cfg); await state.clear()
+        await message.answer(f"✅ {provider.upper()} API key сохранён.\n\nОткройте 🧩 API модели для выбора и проверки модели.", reply_markup=_kb([["🔑 API ключи", "🧩 API модели"], ["⬅️ AI"]]))
