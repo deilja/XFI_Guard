@@ -8,6 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from .ai_ui import install_ai_handlers
 from .ai_center import install_ai_center_handlers
+from .ai_model_manager import install_ai_model_manager
 from .openrouter_ui import install_openrouter_handlers
 from .xui_ui import install_xui_handlers
 from .alert_callbacks import register_alert_callbacks
@@ -24,7 +25,7 @@ def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
-    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp)
+    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
@@ -95,7 +96,7 @@ def build_dispatcher():
     async def force_update_command(message): await force_update_button(message)
     @dp.message(F.text=="🤖 AI")
     async def ai_button(message):
-        if admin(message): await message.answer("🤖 Центр AI\n\nВыберите действие.",reply_markup=kb([["🟢 Gemini","🔵 Groq"],["🟣 OpenRouter","🔀 Выбрать AI"],["🔑 Ключ Gemini","🔑 Ключ Groq"],["🧠 Модель Gemini","🧠 Модель Groq"],["🧪 Проверить AI","ℹ️ Статус AI"],["🩺 Здоровье AI","🔄 Синхронизация AI"],["📊 Консенсус AI","🧹 Сброс здоровья AI"],["⬅️ Главное меню"]]))
+        if admin(message): await message.answer("🤖 Центр AI\n\nВыберите действие.",reply_markup=kb([["🟢 Gemini","🔵 Groq"],["🟣 OpenRouter","🔀 Выбрать AI"],["🧩 API модели"],["🔑 Ключ Gemini","🔑 Ключ Groq"],["🧠 Модель Gemini","🧠 Модель Groq"],["🧪 Проверить AI","ℹ️ Статус AI"],["🩺 Здоровье AI","🔄 Синхронизация AI"],["📊 Консенсус AI","🧹 Сброс здоровья AI"],["⬅️ Главное меню"]]))
     @dp.message(F.text=="🚫 Блокировка IP")
     async def block_button(message):
         if admin(message): await message.answer("🚫 Управление защитой IP\n\nТолько ручное действие администратора. AI не блокирует IP автоматически.",reply_markup=main_kb())
