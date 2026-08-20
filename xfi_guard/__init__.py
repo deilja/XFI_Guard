@@ -4,7 +4,7 @@ __version__ = "1.1.0"
 
 
 def _install_ai_analyzer_compat() -> None:
-    """Expose a stable direct-analysis API without changing the consensus engine."""
+    """Expose a stable direct-analysis API with provider fallback."""
     from .ai import AIAnalyzer
 
     if hasattr(AIAnalyzer, "analyze"):
@@ -16,30 +16,49 @@ def _install_ai_analyzer_compat() -> None:
             return self.analyze_consensus(event)
 
         prompt = str(event)
-        provider = self.provider if self._has_key(self.provider) else ((self.available_providers() or [None])[0])
-        if not provider:
+        configured = self.available_providers()
+        if not configured:
             self.last_error = "no AI providers configured"
             return None
 
-        models = self._models_for(provider)
-        model = models[0] if models else ""
-        if not model:
-            self.last_error = f"{provider}: no model available"
-            return None
+        order = []
+        for provider in [self.provider, "gemini", "groq", "openrouter", "routerai"]:
+            if provider in configured and provider not in order:
+                order.append(provider)
 
-        if provider == "routerai":
-            result = self.routerai.analyze(
-                model,
-                prompt,
-                allow_paid=self.routerai_allow_paid,
-            )
-        else:
-            result = self._call(provider, model, prompt)
+        errors = []
+        for provider in order:
+            models = self._models_for(provider)
+            if not models:
+                errors.append(f"{provider}: no model available")
+                continue
 
-        if result:
-            self.last_provider = provider
-            self.last_model = model
-        return result
+            if provider == "routerai":
+                result = self.routerai.analyze(
+                    models[0],
+                    prompt,
+                    allow_paid=self.routerai_allow_paid,
+                )
+            else:
+                result = None
+                for model in models:
+                    result = self._call(provider, model, prompt)
+                    if result:
+                        break
+
+            if result:
+                self.last_provider = provider
+                if provider == "routerai":
+                    self.last_model = self.routerai.last_model or models[0]
+                self.last_error = ""
+                return result
+
+            provider_error = self.last_provider_errors.get(provider, "")
+            if provider_error:
+                errors.append(provider_error)
+
+        self.last_error = "; ".join(errors[-4:]) or "all AI providers failed"
+        return None
 
     AIAnalyzer.analyze = analyze
 
