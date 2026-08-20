@@ -24,6 +24,8 @@ class AutoBlocker:
         self.confidence = max(0.0, min(1.0, float(confidence)))
         self.min_attempts = max(1, int(min_attempts))
         self.min_providers = max(2, int(min_providers))
+        # Kept for manual/direct use; the monitor passes its already computed
+        # consensus in event["ai_consensus"] to avoid a second AI request.
         self.ai = AIAnalyzer()
         self.db = SecurityDB(db_path)
         self.whitelist = self._load_whitelist()
@@ -65,12 +67,20 @@ class AutoBlocker:
             if attempts < self.min_attempts or ip in blocked:
                 continue
 
-            analysis = self.ai.analyze_consensus({
-                "event_type": "ssh_bruteforce",
-                "ip": ip,
-                "failed_attempts": attempts,
-                "events": items,
-            })
+            # The monitor is the single source of AI events. Reuse its result
+            # instead of invoking Gemini/Groq/OpenRouter a second time.
+            analysis = next(
+                (item.get("ai_consensus") for item in items if item.get("ai_consensus")),
+                None,
+            )
+            if not analysis:
+                analysis = self.ai.analyze_consensus({
+                    "event_type": "ssh_bruteforce",
+                    "ip": ip,
+                    "failed_attempts": attempts,
+                    "events": items,
+                })
+
             risk = str(analysis.get("winner", "unknown")).lower()
             confidence = float(analysis.get("confidence", 0) or 0)
             providers_used = int(analysis.get("providers_used", 0) or 0)
@@ -83,6 +93,11 @@ class AutoBlocker:
                 "consensus": consensus,
                 "providers_used": providers_used,
                 "providers": analysis.get("providers", []),
+                "analysis_mode": (
+                    "full_consensus" if providers_used >= 3 and consensus else
+                    "partial_consensus" if providers_used >= 2 and consensus else
+                    "fallback" if providers_used == 1 else "unavailable"
+                ),
                 "reason": next(
                     (x.get("reason", "") for x in analysis.get("verdicts", []) if x.get("risk") == risk),
                     "AI analysis",
