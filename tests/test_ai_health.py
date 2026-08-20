@@ -25,6 +25,7 @@ def test_health_check_bypasses_provider_cooldown(monkeypatch):
     monkeypatch.setattr(ai_health, "adapt_weights", lambda: {})
 
     result = ai_health.run_health_check()
+    groq = next(item for item in result["results"] if item["provider"] == "groq")
 
-    assert result["results"][0]["ok"] is True
+    assert groq["ok"] is True
     assert analyzer.calls == [("groq", "groq-test", True, True)]
