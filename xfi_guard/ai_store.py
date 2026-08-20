@@ -37,13 +37,16 @@ def load(path: str = DEFAULT_PATH) -> dict:
 
         raw.pop("deepseek_key", None)
         raw.pop("deepseek_model", None)
-
         merged = {**defaults.model_dump(), **raw}
 
-        # RouterAI is enabled when an API key is present. Paid access is an
-        # explicit setting and is no longer forcibly disabled by persistence.
+        # Older XFI Guard releases forcibly persisted routerai_allow_paid=false.
+        # Treat that legacy value as migration state when a RouterAI key exists:
+        # paid models become available as fallback, while free chat models are
+        # still preferred by RouterAIAdapter.
         if merged.get("routerai_key"):
             merged["routerai_enabled"] = True
+            if raw.get("routerai_allow_paid") is False:
+                merged["routerai_allow_paid"] = True
 
         return AISettings.model_validate(merged).model_dump()
     except (OSError, json.JSONDecodeError, ValueError):
