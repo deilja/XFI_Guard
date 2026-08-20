@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-Provider = Literal["gemini", "groq", "openrouter"]
+Provider = Literal["gemini", "groq", "openrouter", "deepseek"]
 
 
 class AISettings(BaseModel):
@@ -15,15 +15,13 @@ class AISettings(BaseModel):
     gemini_model: str = "gemini-2.5-flash"
     groq_model: str = "openai/gpt-oss-20b"
     openrouter_model: str = "openrouter/free"
-    # Для консенсуса используется ровно одна модель OpenRouter.
-    # Список сохраняется для совместимости со старыми конфигурациями,
-    # но дополнительные модели не должны превращать один запрос события
-    # в сотни параллельных API-запросов.
+    deepseek_model: str = "deepseek-v4-flash"
     openrouter_models: tuple[str, ...] = ()
     gemini_key: str = ""
     groq_key: str = ""
     openrouter_key: str = ""
-    ai_weights: dict[Provider, float] = Field(default_factory=lambda: {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0})
+    deepseek_key: str = ""
+    ai_weights: dict[Provider, float] = Field(default_factory=lambda: {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0, "deepseek": 1.0})
     ai_min_consensus: float = Field(default=0.60, ge=0.0, le=1.0)
     ai_timeout: float = Field(default=20.0, gt=0.0, le=300.0)
     ai_max_workers: int = Field(default=6, ge=1, le=8)
@@ -32,7 +30,6 @@ class AISettings(BaseModel):
     @field_validator("openrouter_models")
     @classmethod
     def normalize_openrouter_models(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        """Оставляем только первую уникальную модель для AI-консенсуса."""
         seen: set[str] = set()
         result: list[str] = []
         for item in value:
@@ -47,7 +44,7 @@ class AISettings(BaseModel):
     @field_validator("ai_weights")
     @classmethod
     def validate_weights(cls, value: dict[Provider, float]) -> dict[Provider, float]:
-        result = {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0}
+        result = {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0, "deepseek": 1.0}
         for provider, weight in value.items():
             if weight <= 0:
                 raise ValueError(f"AI weight for {provider} must be > 0")
@@ -57,7 +54,6 @@ class AISettings(BaseModel):
 
 class DefenseSettings(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-
     enabled: bool = False
     confidence: float = Field(default=0.90, ge=0.0, le=1.0)
     min_attempts: int = Field(default=5, ge=1, le=10000)
@@ -66,7 +62,6 @@ class DefenseSettings(BaseModel):
 
 class MonitorSettings(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
-
     interval_seconds: int = Field(default=60, ge=5, le=86400)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     output_file: str = "/var/log/xfi-guard/monitor.jsonl"
