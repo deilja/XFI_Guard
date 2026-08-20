@@ -4,20 +4,6 @@ from unittest.mock import patch
 from xfi_guard.routerai import RouterAIAdapter
 
 
-class FakeResponse:
-    def __init__(self, payload):
-        self.payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def read(self):
-        return json.dumps(self.payload).encode()
-
-
 def test_free_models_are_detected_from_zero_pricing():
     adapter = RouterAIAdapter("test-key")
 
@@ -25,13 +11,27 @@ def test_free_models_are_detected_from_zero_pricing():
         if url.endswith("/models"):
             return {"data": [{"id": "provider/free-chat"}, {"id": "provider/paid-chat"}]}
         if url.endswith("/provider/free-chat/endpoints"):
-            return {"data": {"endpoints": [{"pricing": {"prompt": "0", "completion": "0"}, "status": 200}]}}
+            return {"data": {"endpoints": [{"pricing": {"prompt": "0", "completion": "0"}, "status": 200, "supported_apis": ["chat"]}]}}
         if url.endswith("/provider/paid-chat/endpoints"):
-            return {"data": {"endpoints": [{"pricing": {"prompt": "0.001", "completion": "0.002"}, "status": 200}]}}
+            return {"data": {"endpoints": [{"pricing": {"prompt": "0.001", "completion": "0.002"}, "status": 200, "supported_apis": ["chat"]}]}}
         raise AssertionError(url)
 
     with patch.object(adapter, "_request", side_effect=fake_request):
         assert adapter.free_models(force=True) == ["provider/free-chat"]
+
+
+def test_non_chat_endpoint_is_not_treated_as_free_chat():
+    adapter = RouterAIAdapter("test-key")
+
+    def fake_request(method, url, payload=None):
+        if url.endswith("/models"):
+            return {"data": [{"id": "provider/video-model"}]}
+        if url.endswith("/provider/video-model/endpoints"):
+            return {"data": {"endpoints": [{"pricing": {"prompt": "0", "completion": "0"}, "status": 0, "supported_apis": ["videos"], "output_modalities": ["video"]}]}}
+        raise AssertionError(url)
+
+    with patch.object(adapter, "_request", side_effect=fake_request):
+        assert adapter.free_models(force=True) == []
 
 
 def test_ordered_models_never_puts_paid_preferred_before_free():
@@ -55,3 +55,12 @@ def test_analyze_uses_free_model_first_and_records_model():
     assert result == "OK"
     assert adapter.last_model == "provider/free-chat"
     assert adapter.last_error == ""
+
+
+def test_analyze_does_not_use_paid_when_disabled():
+    adapter = RouterAIAdapter("test-key")
+    with patch.object(adapter, "ordered_models", return_value=[]):
+        result = adapter.analyze("provider/paid-chat", "Reply OK", allow_paid=False)
+
+    assert result is None
+    assert adapter.last_error == "no RouterAI chat models available"
