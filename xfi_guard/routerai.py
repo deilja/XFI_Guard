@@ -1,14 +1,14 @@
 """RouterAI adapter for XFI Guard.
 
-RouterAI exposes an OpenAI-compatible API.  This adapter is intentionally
-standalone so the main AI engine can opt into it without making paid requests
-implicitly.  A model is considered eligible only when its endpoint pricing is
-explicitly zero for prompt and completion.
+RouterAI exposes an OpenAI-compatible API. Free models are preferred, while
+paid models can be used only when the caller explicitly enables the paid
+fallback.
 """
 from __future__ import annotations
 
 import json
 import os
+import time
 from urllib import error, request
 
 BASE_URL = "https://routerai.ru/api/v1"
@@ -21,6 +21,11 @@ class RouterAIAdapter:
         self.api_key = api_key or os.getenv("ROUTERAI_API_KEY") or ""
         self.timeout = timeout
         self.last_error = ""
+        self._models_cache: list[str] = []
+        self._models_cache_ts = 0.0
+        self._free_cache: list[str] = []
+        self._free_cache_ts = 0.0
+        self.cache_ttl = 300.0
 
     @property
     def configured(self) -> bool:
@@ -29,7 +34,7 @@ class RouterAIAdapter:
     def _request(self, method: str, url: str, payload: dict | None = None) -> dict:
         headers = {
             "Accept": "application/json",
-            "User-Agent": "XFI-Guard/1.6",
+            "User-Agent": "XFI-Guard/1.7",
         }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -41,26 +46,30 @@ class RouterAIAdapter:
         with request.urlopen(req, timeout=self.timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def models(self) -> list[str]:
-        """Return RouterAI model IDs visible to the account."""
+    def models(self, force: bool = False) -> list[str]:
+        """Return model IDs visible to the RouterAI account."""
         if not self.configured:
             return []
+        if not force and self._models_cache and time.monotonic() - self._models_cache_ts < self.cache_ttl:
+            return list(self._models_cache)
         try:
             data = self._request("GET", f"{BASE_URL}/models")
-            return [str(item.get("id")) for item in data.get("data", []) if item.get("id")]
+            result = [str(item.get("id")) for item in data.get("data", []) if item.get("id")]
+            self._models_cache = list(dict.fromkeys(result))
+            self._models_cache_ts = time.monotonic()
+            return list(self._models_cache)
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
-            return []
+            return list(self._models_cache)
 
-    def free_models(self, candidates: list[str] | None = None) -> list[str]:
-        """Return only models having an explicitly zero-cost endpoint.
-
-        RouterAI pricing is endpoint-specific, so model availability alone is
-        not sufficient to classify a model as free.
-        """
+    def free_models(self, candidates: list[str] | None = None, force: bool = False) -> list[str]:
+        """Return only models with an explicitly zero-cost endpoint."""
         if not self.configured:
             return []
-        candidates = candidates or self.models()
+        if not force and self._free_cache and time.monotonic() - self._free_cache_ts < self.cache_ttl:
+            allowed = set(candidates or self._models_cache or self.models())
+            return [m for m in self._free_cache if m in allowed]
+        candidates = candidates or self.models(force=force)
         result: list[str] = []
         for model in candidates:
             if "/" not in model:
@@ -71,16 +80,26 @@ class RouterAIAdapter:
                 endpoints = ((data.get("data") or {}).get("endpoints") or [])
                 for endpoint in endpoints:
                     pricing = endpoint.get("pricing") or {}
-                    prompt = pricing.get("prompt")
-                    completion = pricing.get("completion")
-                    if self._zero(prompt) and self._zero(completion) and int(endpoint.get("status", 0) or 0) >= 0:
+                    if self._zero(pricing.get("prompt")) and self._zero(pricing.get("completion")) and int(endpoint.get("status", 0) or 0) >= 0:
                         result.append(model)
                         break
             except error.HTTPError as exc:
                 self.last_error = f"{model}: HTTP {exc.code}"
             except Exception as exc:
                 self.last_error = f"{model}: {type(exc).__name__}: {exc}"
-        return list(dict.fromkeys(result))
+        self._free_cache = list(dict.fromkeys(result))
+        self._free_cache_ts = time.monotonic()
+        return list(self._free_cache)
+
+    def ordered_models(self, candidates: list[str] | None = None, allow_paid: bool = False) -> list[str]:
+        """Return free chat models first, then paid models when explicitly allowed."""
+        all_models = list(dict.fromkeys(candidates or self.models()))
+        free = self.free_models(all_models)
+        if not allow_paid:
+            return free
+        free_set = set(free)
+        paid = [m for m in all_models if m not in free_set]
+        return free + paid
 
     @staticmethod
     def _zero(value) -> bool:
@@ -90,11 +109,6 @@ class RouterAIAdapter:
             return False
 
     def health(self, model: str) -> tuple[bool, str]:
-        """Probe a model with zero output tokens.
-
-        This is opt-in only; the caller must first establish that the model's
-        endpoint pricing is zero if it wants to keep the global free-only rule.
-        """
         if not self.configured:
             return False, "API key not configured"
         try:
@@ -121,7 +135,7 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str) -> str | None:
-        """Analyze using a caller-approved free model only."""
+        """Analyze with a caller-selected model; paid usage is controlled upstream."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
