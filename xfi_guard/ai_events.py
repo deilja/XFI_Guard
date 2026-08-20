@@ -12,14 +12,18 @@ _lock = Lock()
 
 
 def record(event: dict, path: str | None = None) -> None:
-    """Append a small, secret-free AI runtime event to a JSONL audit log."""
+    """Append a small, secret-free AI runtime event without breaking analysis."""
     target = Path(path or os.getenv("XFI_GUARD_AI_EVENTS_PATH", DEFAULT_PATH))
     payload = {"ts": int(time.time()), **event}
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with _lock:
-        with target.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     try:
-        os.chmod(target, 0o600)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with _lock:
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
     except OSError:
-        pass
+        # Audit logging must never make security analysis unavailable.
+        return
