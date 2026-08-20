@@ -105,7 +105,7 @@ class RouterAIAdapter:
 
         if candidates is not None:
             source = candidates
-        elif self._models_cache and not force:
+        elif self._models_cache:
             source = self._models_cache
         else:
             source = self.models(force=force)
