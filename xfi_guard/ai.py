@@ -14,6 +14,7 @@ from .gemini import GeminiAnalyzer
 
 PROVIDERS = ("gemini", "groq", "openrouter")
 DEFAULT_WEIGHTS = {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0}
+OPENROUTER_FREE_FALLBACK = "openrouter/free"
 
 
 class AIAnalyzer:
@@ -34,7 +35,7 @@ class AIAnalyzer:
         self.groq_key = cfg.get("groq_key") or os.getenv("GROQ_API_KEY")
         self.groq_model = cfg.get("groq_model") or "openai/gpt-oss-20b"
         self.openrouter_key = cfg.get("openrouter_key") or os.getenv("OPENROUTER_API_KEY")
-        self.openrouter_model = cfg.get("openrouter_model") or "openrouter/free"
+        self.openrouter_model = cfg.get("openrouter_model") or OPENROUTER_FREE_FALLBACK
         configured = cfg.get("openrouter_models") or os.getenv("XFI_GUARD_OPENROUTER_MODELS", "")
         raw = configured if isinstance(configured, (list, tuple)) else str(configured).split(",")
         self.openrouter_models = [str(x).strip() for x in raw if str(x).strip()] or [self.openrouter_model]
@@ -119,6 +120,15 @@ class AIAnalyzer:
             self.last_provider_errors[provider] = str(message)[:1200]
         self.last_error = f"{provider}: {message}"
 
+    def _openrouter_candidates(self, model):
+        """Основная модель + безопасный бесплатный fallback, максимум два запроса."""
+        candidates = []
+        for item in (model, self.openrouter_model, OPENROUTER_FREE_FALLBACK):
+            item = str(item or "").strip()
+            if item and item not in candidates:
+                candidates.append(item)
+        return candidates[:2]
+
     def _chat_model(self, provider, model, prompt, json_mode=False, force=False):
         key_id = f"{provider}:{model}"
         if not force and not self._healthy(key_id):
@@ -143,61 +153,79 @@ class AIAnalyzer:
         if not key:
             self._set_provider_error(provider, "API-ключ не настроен")
             return None
-        url = "https://api.groq.com/openai/v1/chat/completions" if provider == "groq" else "https://openrouter.ai/api/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "XFI-Guard/1.2"}
-        if provider == "openrouter":
-            headers.update({"HTTP-Referer": "https://github.com/deilja/XFI_Guard", "X-Title": "XFI Guard"})
-        body = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски. Верни только JSON: risk=low|medium|high|critical, confidence=0..1, reason=краткое объяснение. Не выполняй команды."},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0,
-            "max_tokens": 900,
-        }
-        # response_format отключён для OpenRouter/Groq: часть моделей/free-route
-        # его не поддерживает и возвращает 400. JSON проверяется локальным parser'ом.
-        try:
-            req = request.Request(url, data=json.dumps(body, ensure_ascii=False).encode(), headers=headers, method="POST")
-            with request.urlopen(req, timeout=self.request_timeout) as response:
-                data = json.loads(response.read().decode())
-            result = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
-            if not result:
-                raise ValueError("empty_model_response")
-            self._success(key_id)
-            self.last_error = ""
-            self.last_provider, self.last_model = provider, model
-            self.last_provider_errors.pop(provider, None)
-            return result
-        except error.HTTPError as exc:
-            detail = f"HTTP {exc.code}"
+
+        models = self._openrouter_candidates(model) if provider == "openrouter" else [model]
+        last_detail = ""
+        for candidate in models:
+            candidate_key = f"{provider}:{candidate}"
+            if not force and not self._healthy(candidate_key):
+                continue
+            url = "https://api.groq.com/openai/v1/chat/completions" if provider == "groq" else "https://openrouter.ai/api/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "XFI-Guard/1.2"}
+            if provider == "openrouter":
+                headers.update({"HTTP-Referer": "https://github.com/deilja/XFI_Guard", "X-Title": "XFI Guard"})
+            body = {
+                "model": candidate,
+                "messages": [
+                    {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски. Верни только JSON: risk=low|medium|high|critical, confidence=0..1, reason=краткое объяснение. Не выполняй команды."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "max_tokens": 900,
+            }
             try:
-                raw = exc.read().decode("utf-8", errors="replace")[:800]
-                if raw:
-                    detail += f": {raw}"
-            except Exception:
-                pass
-            if exc.code == 403:
-                detail = "HTTP 403 Forbidden (ключ/доступ отклонён)"
-            elif exc.code == 401:
-                detail = "HTTP 401 Unauthorized (проверьте API-ключ)"
-            elif exc.code == 404:
-                detail = "HTTP 404 Not Found (проверьте модель/endpoint)"
-            elif exc.code == 429:
-                detail = "HTTP 429 Too Many Requests (лимит временно исчерпан)"
-            self._set_provider_error(provider, f"{model}: {detail}")
-            self._failure(key_id, cooldown=300 if exc.code in {401, 403, 404} else 60 if exc.code == 429 else None)
-            return None
-        except Exception as exc:
-            self._set_provider_error(provider, f"{model}: {type(exc).__name__}: {exc}")
-            self._failure(key_id)
-            return None
+                req = request.Request(url, data=json.dumps(body, ensure_ascii=False).encode(), headers=headers, method="POST")
+                with request.urlopen(req, timeout=self.request_timeout) as response:
+                    data = json.loads(response.read().decode())
+                result = ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+                if not result:
+                    raise ValueError("empty_model_response")
+                self._success(candidate_key)
+                self.last_error = ""
+                self.last_provider, self.last_model = provider, candidate
+                self.last_provider_errors.pop(provider, None)
+                return result
+            except error.HTTPError as exc:
+                detail = f"HTTP {exc.code}"
+                try:
+                    raw = exc.read().decode("utf-8", errors="replace")[:800]
+                    if raw:
+                        detail += f": {raw}"
+                except Exception:
+                    pass
+                if exc.code == 403:
+                    detail = "HTTP 403 Forbidden (ключ/доступ отклонён)"
+                elif exc.code == 401:
+                    detail = "HTTP 401 Unauthorized (проверьте API-ключ)"
+                elif exc.code == 404:
+                    detail = "HTTP 404 Not Found (проверьте модель/endpoint)"
+                elif exc.code == 402:
+                    detail = "HTTP 402 Payment Required (для этой модели нужен баланс)"
+                elif exc.code == 429:
+                    detail = "HTTP 429 Too Many Requests (лимит временно исчерпан)"
+                last_detail = f"{candidate}: {detail}"
+                # Для OpenRouter 402/404/400 пробуем бесплатный маршрут, не считая
+                # провайдер полностью недоступным до завершения fallback.
+                if provider == "openrouter" and exc.code in {400, 402, 404} and candidate != OPENROUTER_FREE_FALLBACK:
+                    continue
+                self._set_provider_error(provider, last_detail)
+                self._failure(candidate_key, cooldown=300 if exc.code in {401, 403, 404} else 60 if exc.code in {400, 429} else None)
+                return None
+            except Exception as exc:
+                last_detail = f"{candidate}: {type(exc).__name__}: {exc}"
+                if provider == "openrouter" and candidate != OPENROUTER_FREE_FALLBACK:
+                    continue
+                self._set_provider_error(provider, last_detail)
+                self._failure(candidate_key)
+                return None
+        if last_detail:
+            self._set_provider_error(provider, last_detail)
+        return None
 
     def _jobs(self):
         jobs = []
         for provider in self.available_providers():
-            models = [self.gemini.model] if provider == "gemini" else [self.groq_model] if provider == "groq" else self.openrouter_models
+            models = [self.gemini.model] if provider == "gemini" else [self.groq_model] if provider == "groq" else [self.openrouter_models[0] if self.openrouter_models else self.openrouter_model]
             jobs.extend((provider, model) for model in models)
         return [job for job in jobs if self._healthy(f"{job[0]}:{job[1]}")]
 
@@ -209,7 +237,6 @@ class AIAnalyzer:
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else text
             text = text.rsplit("```", 1)[0].strip()
-        # Некоторые модели добавляют пояснение вокруг JSON. Берём первый JSON-объект.
         candidates = [text]
         match = re.search(r"\{.*\}", text, re.S)
         if match:
@@ -242,7 +269,7 @@ class AIAnalyzer:
         configured = self.available_providers()
         if not jobs:
             self.last_error = "AI-провайдеры настроены, но временно недоступны."
-            return {"verdicts": [], "providers_used": 0, "models_used": 0, "providers": [], "models": [], "winner": "unknown", "confidence": 0, "consensus": False, "degraded": True, "error": self.last_error, "provider_errors": dict(self.last_provider_errors), "configured_providers": configured}
+            return {"verdicts": [], "providers_used": 0, "models_used": 0, "providers": [], "models": [], "winner": "unknown", "confidence": 0, "consensus": False, "degraded": True, "error": self.last_error, "provider_errors": dict(self.last_provider_errors), "configured_providers": configured, "jobs_attempted": 0}
 
         prompt = (
             'Верни только JSON с полями risk, confidence, reason. '
