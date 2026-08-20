@@ -26,6 +26,7 @@ class RouterAIAdapter:
         self.api_key = api_key or os.getenv("ROUTERAI_API_KEY") or ""
         self.timeout = timeout
         self.last_error = ""
+        self.last_model = ""
         self._models_cache: list[str] = []
         self._models_cache_ts = 0.0
         self._free_cache: list[str] = []
@@ -101,15 +102,25 @@ class RouterAIAdapter:
         self._free_cache_ts = time.monotonic()
         return list(self._free_cache)
 
-    def ordered_models(self, candidates: list[str] | None = None, allow_paid: bool = True) -> list[str]:
-        """Return free chat models first and paid chat models after them."""
+    def ordered_models(self, candidates: list[str] | None = None, allow_paid: bool = True, preferred: str | None = None) -> list[str]:
+        """Return free chat models first, then paid models when explicitly allowed.
+
+        A preferred model is placed first only when it is verified free. A paid
+        preferred model never jumps ahead of free models.
+        """
         all_models = list(dict.fromkeys(candidates or self.models()))
         all_models = [m for m in all_models if self._is_chat_model(m)]
         free = self.free_models(all_models)
-        if not allow_paid:
-            return free
         free_set = set(free)
-        return free + [m for m in all_models if m not in free_set]
+        ordered_free = list(free)
+        if preferred and preferred in free_set:
+            ordered_free = [preferred, *[m for m in ordered_free if m != preferred]]
+        if not allow_paid:
+            return ordered_free
+        paid = [m for m in all_models if m not in free_set]
+        if preferred and preferred in paid:
+            paid = [m for m in paid if m != preferred] + [preferred]
+        return ordered_free + paid
 
     @staticmethod
     def _zero(value) -> bool:
@@ -143,19 +154,13 @@ class RouterAIAdapter:
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
 
-    def analyze(self, model: str, prompt: str, allow_paid: bool = True) -> str | None:
-        """Analyze with free RouterAI chat models first; optionally fall back to paid."""
+    def analyze(self, model: str, prompt: str, allow_paid: bool = False) -> str | None:
+        """Analyze using free models first; paid fallback requires explicit opt-in."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
 
-        candidates = self.ordered_models(allow_paid=allow_paid)
-        if model:
-            candidates = [m for m in candidates if m != model]
-            if model in self.models():
-                if allow_paid or model in self.free_models():
-                    candidates.append(model)
-
+        candidates = self.ordered_models(allow_paid=allow_paid, preferred=model)
         if not candidates:
             self.last_error = "no RouterAI chat models available"
             return None
@@ -179,6 +184,7 @@ class RouterAIAdapter:
                 content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
                 if content:
                     self.last_error = ""
+                    self.last_model = candidate
                     return str(content)
                 errors.append(f"{candidate}: empty response")
             except error.HTTPError as exc:
