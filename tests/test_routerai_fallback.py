@@ -20,6 +20,7 @@ class RouterAIFallbackTests(unittest.TestCase):
         adapter = RouterAIAdapter(api_key="test")
         calls = []
         adapter.ordered_models = lambda candidates=None, allow_paid=True: ["free/model", "paid/model"]
+        adapter.free_models = lambda candidates=None, force=False: ["free/model"]
 
         def fake_request(method, url, payload=None):
             calls.append(payload["model"])
