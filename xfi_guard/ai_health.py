@@ -1,10 +1,12 @@
 """AI provider health metrics and adaptive weights for XFI Guard."""
 from __future__ import annotations
+
 import json, os, time
 from datetime import datetime, timezone
 from pathlib import Path
 from .ai import AIAnalyzer, PROVIDERS
 from .ai_store import load, save
+
 STATE=Path(os.getenv("XFI_GUARD_AI_HEALTH","/var/lib/xfi-guard/ai_health.json"))
 
 def _read():
@@ -34,13 +36,24 @@ def adapt_weights(min_weight=0.25,max_weight=1.5):
 
 def run_health_check():
     analyzer=AIAnalyzer(); results=[]
-    models={"gemini":analyzer.gemini.model,"groq":analyzer.groq_model,"openrouter":analyzer.openrouter_model}
+    models={
+        "gemini": getattr(getattr(analyzer,"gemini",None),"model", ""),
+        "groq": getattr(analyzer,"groq_model", ""),
+        "openrouter": getattr(analyzer,"openrouter_model", getattr(analyzer,"openrouter_models", [""])[0] if getattr(analyzer,"openrouter_models",None) else ""),
+        "routerai": getattr(analyzer,"routerai_model", ""),
+    }
     for provider in PROVIDERS:
         if not analyzer._has_key(provider):
             results.append({"provider":provider,"model":models[provider],"ok":False,"latency_ms":0,"error":"API-ключ не настроен"}); continue
         model=models[provider]; started=time.monotonic(); ok=False; err=""
         try:
-            checked=analyzer.check_provider(provider,force=True); ok=bool(checked.get("ok")); err=checked.get("error","")
+            if hasattr(analyzer, "check_provider"):
+                checked=analyzer.check_provider(provider,force=True); ok=bool(checked.get("ok")); err=checked.get("error","")
+            elif hasattr(analyzer, "_chat_model"):
+                checked=analyzer._chat_model(provider,model,"Ответь OK",json_mode=True,force=True); ok=bool(checked); err=analyzer.last_error if not ok else ""
+            else:
+                checked=analyzer._call(provider,model,"Ответь только JSON: {\"risk\":\"low\",\"confidence\":1,\"reason\":\"health check\"}") if model else None
+                ok=bool(checked); err=analyzer.last_error if not ok else ""
         except Exception as exc: err=f"{type(exc).__name__}: {exc}"
         latency=round((time.monotonic()-started)*1000,1); record(provider,model,ok,latency,err); results.append({"provider":provider,"model":model,"ok":ok,"latency_ms":latency,"error":err})
     return {"results":results,"weights":adapt_weights(),"timestamp":datetime.now(timezone.utc).isoformat()}
