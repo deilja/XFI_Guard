@@ -11,7 +11,6 @@ DEFAULT_PATH = "/var/lib/xfi-guard/ai.json"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_OPENROUTER_MODEL = "openrouter/free"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 LEGACY_GROQ_MODELS = {
     "llama-3.3-70b-versatile": DEFAULT_GROQ_MODEL,
@@ -25,7 +24,6 @@ def load(path: str = DEFAULT_PATH) -> dict:
         gemini_model=DEFAULT_GEMINI_MODEL,
         groq_model=DEFAULT_GROQ_MODEL,
         openrouter_model=DEFAULT_OPENROUTER_MODEL,
-        deepseek_model=DEFAULT_DEEPSEEK_MODEL,
     )
     p = Path(path)
     if not p.is_file():
@@ -36,6 +34,9 @@ def load(path: str = DEFAULT_PATH) -> dict:
             return defaults.model_dump()
         if raw.get("groq_model") in LEGACY_GROQ_MODELS:
             raw = {**raw, "groq_model": LEGACY_GROQ_MODELS[raw["groq_model"]]}
+        # Paid/removed providers are intentionally discarded on load.
+        raw.pop("deepseek_key", None)
+        raw.pop("deepseek_model", None)
         merged = {**defaults.model_dump(), **raw}
         return AISettings.model_validate(merged).model_dump()
     except (OSError, json.JSONDecodeError, ValueError):
@@ -43,6 +44,9 @@ def load(path: str = DEFAULT_PATH) -> dict:
 
 
 def save(data: dict, path: str = DEFAULT_PATH) -> None:
+    data = dict(data)
+    data.pop("deepseek_key", None)
+    data.pop("deepseek_model", None)
     settings = AISettings.model_validate(data)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
