@@ -32,19 +32,25 @@ def jail_active() -> bool:
 
 
 def ban(ip: str, seconds: int = BAN_SECONDS) -> tuple[bool, str]:
-    """Ban an IP through the dedicated XFI Guard Fail2Ban jail."""
+    """Ban an IP through the dedicated XFI Guard Fail2Ban jail.
+
+    The jail configuration owns the effective bantime.  We deliberately use
+    ``banip <IP>`` rather than passing a third argument to fail2ban-client,
+    because the latter is not a portable bantime override across Fail2Ban
+    versions.  The shipped jail is pinned to BAN_SECONDS (7 days).
+    """
     ip = _valid_ip(ip)
-    seconds = max(60, int(seconds))
+    requested = max(60, int(seconds))
     if not jail_active():
         return False, f"Fail2Ban jail '{JAIL}' is not active"
 
     code, stdout, stderr = _run(
-        ["fail2ban-client", "set", JAIL, "banip", ip, str(seconds)]
+        ["fail2ban-client", "set", JAIL, "banip", ip]
     )
     output = (stdout or stderr).strip()
     if code == 0:
         _write_sync_log(ip)
-        return True, f"IP {ip} заблокирован Fail2Ban на {seconds // 86400} дн."
+        return True, f"IP {ip} заблокирован Fail2Ban на {requested // 86400} дн."
     if "already banned" in output.lower():
         _write_sync_log(ip)
         return True, f"IP {ip} уже заблокирован Fail2Ban."
