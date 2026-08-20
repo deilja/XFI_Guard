@@ -18,9 +18,10 @@ BASE_URL = "https://routerai.ru/api/v1"
 class RouterAIAdapter:
     provider = "routerai"
 
-    def __init__(self, api_key: str | None = None, timeout: float = 20.0):
+    def __init__(self, api_key: str | None = None, timeout: float = 20.0, allow_paid: bool = True):
         self.api_key = api_key or os.getenv("ROUTERAI_API_KEY") or ""
         self.timeout = timeout
+        self.allow_paid = bool(allow_paid)
         self.last_error = ""
         self._preferred_models: list[str] = []
         self._free_models: list[str] = []
@@ -54,12 +55,12 @@ class RouterAIAdapter:
             return []
 
     def models(self) -> list[str]:
-        """Return text-chat models with free models first, then paid models."""
+        """Return text-chat models with free models first, then paid models when allowed."""
         if not self.configured:
             return []
         candidates = self._raw_models()
         free, paid = self._classify_models(candidates)
-        self._set_classification(free, paid)
+        self._set_classification(free, paid if self.allow_paid else [])
         return list(self._preferred_models)
 
     @staticmethod
@@ -120,7 +121,7 @@ class RouterAIAdapter:
 
     def _set_classification(self, free: list[str], paid: list[str]) -> None:
         self._free_models = list(dict.fromkeys(free))
-        self._paid_models = list(dict.fromkeys(paid))
+        self._paid_models = list(dict.fromkeys(paid if self.allow_paid else []))
         self._preferred_models = list(dict.fromkeys([*self._free_models, *self._paid_models]))
         self._classification_ts = time.monotonic()
 
@@ -144,8 +145,8 @@ class RouterAIAdapter:
         return free
 
     def paid_models(self, candidates: list[str] | None = None) -> list[str]:
-        """Return text-chat models with non-zero pricing."""
-        if not self.configured:
+        """Return text-chat models with non-zero pricing when paid fallback is allowed."""
+        if not self.configured or not self.allow_paid:
             return []
         if candidates is None:
             self._ensure_classification()
@@ -156,6 +157,7 @@ class RouterAIAdapter:
 
     def text_models(self, candidates: list[str] | None = None, include_paid: bool = True) -> list[str]:
         """Return free text models first, then paid text models when allowed."""
+        include_paid = bool(include_paid and self.allow_paid)
         if candidates is None:
             self._ensure_classification()
             return list(self._free_models) + (list(self._paid_models) if include_paid else [])
@@ -227,7 +229,7 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str) -> str | None:
-        """Analyze with free-first ordering and paid fallback when discovered."""
+        """Analyze with free-first ordering and optional paid fallback."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
