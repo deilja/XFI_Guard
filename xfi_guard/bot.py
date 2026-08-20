@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .ai_ui import install_ai_handlers
 from .ai_center import install_ai_center_handlers, ai_center_menu
@@ -97,10 +97,28 @@ def build_dispatcher() -> Dispatcher:
             return
         try:
             p = subprocess.run(["journalctl", "-u", "xfi-guard", "-u", "xfi-guard-bot", "-n", "40", "--no-pager"], text=True, capture_output=True, timeout=8, check=False)
-            text = (p.stdout or p.stderr).strip()[-3600:] or "Событий нет."
+            text = (p.stdout or p.stderr).strip()[-3000:] or "Событий нет."
         except Exception as exc:
             text = f"❌ Не удалось получить события: {type(exc).__name__}: {exc}"
-        await message.answer("📋 Последние события\n\n" + text, reply_markup=main_kb())
+
+        # События должны быть не только просмотром журнала: для найденных
+        # атакующих IP администратор может сразу открыть подтверждение блокировки.
+        buttons = []
+        try:
+            data = collect_attack_surface()
+            candidates = [x for x in data.get("ips", []) if x.get("ip") and not x.get("blocked")]
+            candidates.sort(key=lambda x: int(x.get("risk_score", 0) or 0), reverse=True)
+            for item in candidates[:10]:
+                ip = str(item["ip"])
+                risk = str(item.get("risk", "unknown")).upper()
+                score = int(item.get("risk_score", 0) or 0)
+                buttons.append([InlineKeyboardButton(text=f"🚫 Заблокировать {ip} ({risk} {score}/100)", callback_data=f"manual:block:{ip}")])
+        except Exception:
+            pass
+
+        markup = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+        await message.answer("📋 Последние события\n\n" + text, reply_markup=markup)
+        await message.answer("⬅️ Возврат в главное меню", reply_markup=main_kb())
 
     @dp.message(F.text == "🛡 Картина атак")
     async def attack_surface_button(message):
