@@ -12,10 +12,9 @@ from urllib import error, request
 
 BASE_URL = "https://routerai.ru/api/v1"
 _NON_CHAT_MARKERS = (
-    "image", "video", "rerank", "embedding", "moderation", "whisper",
-    "tts", "speech", "audio", "music", "lyria", "veo", "flux", "seedance",
-    "seedream", "kling", "sora", "recraft", "riverflow", "happyhorse",
-    "gpt-image", "mai-image", "qwen-image", "gemini-image",
+    "embedding", "moderation", "whisper", "tts", "speech", "audio", "music",
+    "lyria", "veo", "flux", "seedance", "seedream", "kling", "sora",
+    "recraft", "riverflow", "gpt-image", "mai-image", "qwen-image", "gemini-image",
 )
 
 
@@ -54,6 +53,29 @@ class RouterAIAdapter:
         value = model.lower()
         return not any(marker in value for marker in _NON_CHAT_MARKERS)
 
+    @staticmethod
+    def _is_chat_endpoint(endpoint: dict) -> bool:
+        """Return True only for endpoints usable by /chat/completions.
+
+        RouterAI exposes endpoint capabilities through ``supported_apis`` and
+        output modalities. Older/mock responses may omit those fields, so the
+        absence of capability metadata remains compatible with the legacy API.
+        """
+        apis = endpoint.get("supported_apis")
+        if apis and "chat" not in {str(x).lower() for x in apis}:
+            return False
+        output = endpoint.get("output_modalities")
+        if output and "text" not in {str(x).lower() for x in output}:
+            return False
+        return True
+
+    def _endpoint_info(self, model: str) -> list[dict]:
+        if "/" not in model:
+            return []
+        author, slug = model.split("/", 1)
+        data = self._request("GET", f"{BASE_URL}/models/{author}/{slug}/endpoints")
+        return list(((data.get("data") or {}).get("endpoints") or []))
+
     def models(self, force: bool = False) -> list[str]:
         """Return chat-capable model IDs visible to the RouterAI account."""
         if not self.configured:
@@ -74,7 +96,7 @@ class RouterAIAdapter:
             return list(self._models_cache)
 
     def free_models(self, candidates: list[str] | None = None, force: bool = False) -> list[str]:
-        """Return only chat models with an explicitly zero-cost endpoint."""
+        """Return chat models having at least one healthy zero-price endpoint."""
         if not self.configured:
             return []
         if not force and self._free_cache and time.monotonic() - self._free_cache_ts < self.cache_ttl:
@@ -83,15 +105,14 @@ class RouterAIAdapter:
         candidates = [m for m in (candidates or self.models(force=force)) if self._is_chat_model(m)]
         result: list[str] = []
         for model in candidates:
-            if "/" not in model:
-                continue
-            author, slug = model.split("/", 1)
             try:
-                data = self._request("GET", f"{BASE_URL}/models/{author}/{slug}/endpoints")
-                endpoints = ((data.get("data") or {}).get("endpoints") or [])
+                endpoints = self._endpoint_info(model)
                 for endpoint in endpoints:
                     pricing = endpoint.get("pricing") or {}
-                    if self._zero(pricing.get("prompt")) and self._zero(pricing.get("completion")) and int(endpoint.get("status", 0) or 0) >= 0:
+                    status = int(endpoint.get("status", 0) or 0)
+                    if status < 0 or not self._is_chat_endpoint(endpoint):
+                        continue
+                    if self._zero(pricing.get("prompt")) and self._zero(pricing.get("completion")):
                         result.append(model)
                         break
             except error.HTTPError as exc:
@@ -103,11 +124,7 @@ class RouterAIAdapter:
         return list(self._free_cache)
 
     def ordered_models(self, candidates: list[str] | None = None, allow_paid: bool = True, preferred: str | None = None) -> list[str]:
-        """Return free chat models first, then paid models when explicitly allowed.
-
-        A preferred model is placed first only when it is verified free. A paid
-        preferred model never jumps ahead of free models.
-        """
+        """Return free chat models first, then paid models when explicitly allowed."""
         all_models = list(dict.fromkeys(candidates or self.models()))
         all_models = [m for m in all_models if self._is_chat_model(m)]
         free = self.free_models(all_models)
