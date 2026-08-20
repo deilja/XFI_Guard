@@ -10,8 +10,9 @@ from aiogram import F, Dispatcher
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 from .ai_store import load, save
+from .routerai import RouterAIAdapter
 
-PROVIDERS = ("gemini", "groq", "openrouter")
+PROVIDERS = ("gemini", "groq", "openrouter", "routerai")
 
 
 def _kb(rows):
@@ -48,6 +49,10 @@ def _fetch(provider: str, key: str) -> list[dict]:
             if model_id and free:
                 result.append({"id": model_id, "free": True})
         return sorted(result, key=lambda x: x["id"])
+    if provider == "routerai":
+        adapter = RouterAIAdapter(key, timeout=15)
+        models = awaitable = adapter.free_models()
+        return sorted(({"id": model, "free": True} for model in models), key=lambda x: x["id"])
     raise ValueError(f"Неизвестный провайдер: {provider}")
 
 
@@ -62,6 +67,10 @@ def _current(cfg: dict, provider: str) -> str:
 def _save_model(provider: str, model: str) -> None:
     cfg = load(); cfg[f"{provider}_model"] = model
     if provider == "openrouter": cfg["openrouter_models"] = (model,)
+    if provider == "routerai":
+        cfg["routerai_models"] = (model,)
+        cfg["routerai_enabled"] = True
+        cfg["routerai_allow_paid"] = False
     save(cfg)
 
 
@@ -77,9 +86,10 @@ def install_ai_model_manager(dp: Dispatcher) -> None:
             "🧩 Выбор бесплатных моделей через API\n\n"
             f"Gemini: {cfg.get('gemini_model', '-')}\n"
             f"Groq: {cfg.get('groq_model', '-')}\n"
-            f"OpenRouter: {cfg.get('openrouter_model', 'openrouter/free')}\n\n"
+            f"OpenRouter: {cfg.get('openrouter_model', 'openrouter/free')}\n"
+            f"RouterAI: {cfg.get('routerai_model', '-') or '-'}\n\n"
             "Выберите провайдера:",
-            reply_markup=_kb([["📡 Gemini API", "📡 Groq API"], ["📡 OpenRouter API"], ["🆓 OpenRouter Free"], ["⬅️ AI"]]),
+            reply_markup=_kb([["📡 Gemini API", "📡 Groq API"], ["📡 OpenRouter API", "📡 RouterAI API"], ["🆓 OpenRouter Free"], ["⬅️ AI"]]),
         )
 
     async def show_models(message, provider: str):
@@ -99,7 +109,7 @@ def install_ai_model_manager(dp: Dispatcher) -> None:
         except Exception as exc:
             await message.answer(f"❌ {provider.upper()} API: {type(exc).__name__}: {exc}", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]]))
 
-    for label, provider in (("📡 Gemini API", "gemini"), ("📡 Groq API", "groq"), ("📡 OpenRouter API", "openrouter")):
+    for label, provider in (("📡 Gemini API", "gemini"), ("📡 Groq API", "groq"), ("📡 OpenRouter API", "openrouter"), ("📡 RouterAI API", "routerai")):
         @dp.message(F.text == label)
         async def provider_api(message, _provider=provider): await show_models(message, _provider)
 
