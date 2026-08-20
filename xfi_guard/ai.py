@@ -293,8 +293,35 @@ class AIAnalyzer:
                 self._set_provider_error(provider, f"{candidate}: {type(exc).__name__}: {exc}")
         return None
 
+    def _analyze_groq(self, event):
+        """Backward-compatible Groq single-provider hook used by older integrations/tests."""
+        prompt = self._prompt(event) if not isinstance(event, str) else event
+        model = self.groq_model or (self._models_for("groq") or [""])[0]
+        if not model:
+            self.last_error = "Groq не настроен"
+            return None
+        return self._call("groq", model, prompt)
+
     def analyze(self, event):
-        """Compatibility/public single-analysis API backed by consensus engine."""
+        """Public API: strings use direct provider fallback; events use consensus."""
+        if isinstance(event, str):
+            self._sync_config()
+            self.last_error = ""
+            self.last_provider_errors = {}
+            providers = [self.provider] + [p for p in PROVIDERS if p != self.provider]
+            for provider in providers:
+                if not self._has_key(provider):
+                    continue
+                models = self._models_for(provider)
+                for model in models:
+                    if not model:
+                        continue
+                    result = self._call(provider, model, event)
+                    if result:
+                        return result
+            if not self.last_error:
+                self.last_error = "AI-провайдер не настроен"
+            return None
         result = self.analyze_consensus(event)
         return result.get("winner", "unknown") if isinstance(result, dict) else None
 
