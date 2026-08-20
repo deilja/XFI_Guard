@@ -7,12 +7,20 @@ def _install_ai_analyzer_compat() -> None:
     """Expose a stable direct-analysis API with provider fallback."""
     from .ai import AIAnalyzer
 
+    def _analyze_groq(self, event):
+        prompt = self._prompt(event) if isinstance(event, dict) else str(event)
+        model = self.groq_model
+        if not model:
+            return None
+        return self._call("groq", model, prompt)
+
     def analyze(self, event):
-        self._sync_config()
+        # Do not reload persisted configuration here: callers may inject
+        # provider credentials/adapters for one request.
         prompt = self._prompt(event) if isinstance(event, dict) else str(event)
         configured = self.available_providers()
         if not configured:
-            self.last_error = "AI-провайдеры не настроен"
+            self.last_error = "AI-провайдеры не настроены"
             return None
 
         order = []
@@ -22,6 +30,15 @@ def _install_ai_analyzer_compat() -> None:
 
         errors = []
         for provider in order:
+            if provider == "groq":
+                result = self._analyze_groq(event)
+                if result:
+                    self.last_provider = provider
+                    self.last_model = self.groq_model
+                    self.last_error = ""
+                    return result
+                continue
+
             models = self._models_for(provider)
             if not models:
                 errors.append(f"{provider}: no model available")
@@ -54,6 +71,7 @@ def _install_ai_analyzer_compat() -> None:
         self.last_error = "; ".join(errors[-4:]) or "all AI providers failed"
         return None
 
+    AIAnalyzer._analyze_groq = _analyze_groq
     AIAnalyzer.analyze = analyze
 
 
