@@ -55,15 +55,22 @@ def format_alert(alert: dict) -> str:
 
 def send_alert(alert: dict) -> list[dict]:
     text = format_alert(alert)
-    markup = {"inline_keyboard": [[
-        {"text": "🛡 Заблокировать", "callback_data": "xfi:block:" + str(alert.get("ip", ""))},
-        {"text": "🔎 Подробнее", "callback_data": "xfi:detail:" + str(alert.get("id", ""))}],
-        [{"text": "🔕 Игнорировать", "callback_data": "xfi:ignore:" + str(alert.get("id", ""))}]]}
+    ip = str(alert.get("ip", "")).strip()
+    score = int(alert.get("score", 0) or 0)
+    risk = str(alert.get("risk", "unknown")).lower()
+    rows = []
+    if ip:
+        rows.append([{"text": "🛡 Заблокировать IP", "callback_data": "xfi:block:" + ip}, {"text": "🔎 Подробнее", "callback_data": "xfi:detail:" + str(alert.get("id", ""))}])
+    else:
+        rows.append([{"text": "🔎 Подробнее", "callback_data": "xfi:detail:" + str(alert.get("id", ""))}])
+    if risk == "critical" or score >= 80:
+        rows.append([{"text": "🚨 Заблокировать все критические", "callback_data": "xfi:block_all_critical"}])
+    rows.append([{"text": "🔕 Игнорировать", "callback_data": "xfi:ignore:" + str(alert.get("id", ""))}])
+    markup = {"inline_keyboard": rows}
     results=[]
     for chat_id in _admins():
         result=_call("sendMessage", {"chat_id": chat_id, "text": text, "reply_markup": markup})
         results.append(result)
         if not result.get("ok"):
-            # Keep delivery failures visible in the monitor journal without exposing the bot token.
             print(f"Telegram alert delivery failed for chat {chat_id}: {result.get('description', 'unknown error')}", flush=True)
     return results
