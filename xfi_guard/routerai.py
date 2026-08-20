@@ -1,14 +1,15 @@
 """RouterAI adapter for XFI Guard.
 
-RouterAI exposes an OpenAI-compatible API.  This adapter is intentionally
-standalone so the main AI engine can opt into it without making paid requests
-implicitly.  A model is considered eligible only when its endpoint pricing is
-explicitly zero for prompt and completion.
+RouterAI exposes an OpenAI-compatible API. The adapter classifies models by
+actual endpoint pricing/capabilities so XFI Guard can prefer free text-chat
+models and optionally fall back to paid text-chat models when explicitly
+allowed by configuration.
 """
 from __future__ import annotations
 
 import json
 import os
+import time
 from urllib import error, request
 
 BASE_URL = "https://routerai.ru/api/v1"
@@ -17,20 +18,22 @@ BASE_URL = "https://routerai.ru/api/v1"
 class RouterAIAdapter:
     provider = "routerai"
 
-    def __init__(self, api_key: str | None = None, timeout: float = 20.0):
+    def __init__(self, api_key: str | None = None, timeout: float = 20.0, allow_paid: bool = True):
         self.api_key = api_key or os.getenv("ROUTERAI_API_KEY") or ""
         self.timeout = timeout
+        self.allow_paid = bool(allow_paid)
         self.last_error = ""
+        self._preferred_models: list[str] = []
+        self._free_models: list[str] = []
+        self._paid_models: list[str] = []
+        self._classification_ts = 0.0
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key)
 
     def _request(self, method: str, url: str, payload: dict | None = None) -> dict:
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "XFI-Guard/1.6",
-        }
+        headers = {"Accept": "application/json", "User-Agent": "XFI-Guard/1.6"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         data = None
@@ -41,8 +44,7 @@ class RouterAIAdapter:
         with request.urlopen(req, timeout=self.timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def models(self) -> list[str]:
-        """Return RouterAI model IDs visible to the account."""
+    def _raw_models(self) -> list[str]:
         if not self.configured:
             return []
         try:
@@ -52,16 +54,54 @@ class RouterAIAdapter:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return []
 
-    def free_models(self, candidates: list[str] | None = None) -> list[str]:
-        """Return only models having an explicitly zero-cost endpoint.
-
-        RouterAI pricing is endpoint-specific, so model availability alone is
-        not sufficient to classify a model as free.
-        """
+    def models(self) -> list[str]:
+        """Return text-chat models with free models first, then paid models when allowed."""
         if not self.configured:
             return []
-        candidates = candidates or self.models()
-        result: list[str] = []
+        candidates = self._raw_models()
+        free, paid = self._classify_models(candidates)
+        self._set_classification(free, paid if self.allow_paid else [])
+        return list(self._preferred_models)
+
+    @staticmethod
+    def _is_text_chat_endpoint(endpoint: dict) -> bool:
+        try:
+            if int(endpoint.get("status", 0) or 0) < 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+        supported_apis = endpoint.get("supported_apis") or []
+        if supported_apis and "chat" not in {str(x).lower() for x in supported_apis}:
+            return False
+        architecture = endpoint.get("architecture") or {}
+        input_modalities = architecture.get("input_modalities") or []
+        output_modalities = architecture.get("output_modalities") or []
+        if input_modalities and "text" not in {str(x).lower() for x in input_modalities}:
+            return False
+        if output_modalities and "text" not in {str(x).lower() for x in output_modalities}:
+            return False
+        return True
+
+    @staticmethod
+    def _is_free_chat_endpoint(endpoint: dict) -> bool:
+        if not RouterAIAdapter._is_text_chat_endpoint(endpoint):
+            return False
+        pricing = endpoint.get("pricing") or {}
+        return RouterAIAdapter._zero(pricing.get("prompt")) and RouterAIAdapter._zero(pricing.get("completion"))
+
+    @staticmethod
+    def _is_paid_chat_endpoint(endpoint: dict) -> bool:
+        if not RouterAIAdapter._is_text_chat_endpoint(endpoint):
+            return False
+        pricing = endpoint.get("pricing") or {}
+        try:
+            return float(pricing.get("prompt") or 0) > 0 or float(pricing.get("completion") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _classify_models(self, candidates: list[str]) -> tuple[list[str], list[str]]:
+        free: list[str] = []
+        paid: list[str] = []
         for model in candidates:
             if "/" not in model:
                 continue
@@ -69,18 +109,61 @@ class RouterAIAdapter:
             try:
                 data = self._request("GET", f"{BASE_URL}/models/{author}/{slug}/endpoints")
                 endpoints = ((data.get("data") or {}).get("endpoints") or [])
-                for endpoint in endpoints:
-                    pricing = endpoint.get("pricing") or {}
-                    prompt = pricing.get("prompt")
-                    completion = pricing.get("completion")
-                    if self._zero(prompt) and self._zero(completion) and int(endpoint.get("status", 0) or 0) >= 0:
-                        result.append(model)
-                        break
+                if any(self._is_free_chat_endpoint(endpoint) for endpoint in endpoints):
+                    free.append(model)
+                elif any(self._is_paid_chat_endpoint(endpoint) for endpoint in endpoints):
+                    paid.append(model)
             except error.HTTPError as exc:
                 self.last_error = f"{model}: HTTP {exc.code}"
             except Exception as exc:
                 self.last_error = f"{model}: {type(exc).__name__}: {exc}"
-        return list(dict.fromkeys(result))
+        return list(dict.fromkeys(free)), list(dict.fromkeys(paid))
+
+    def _set_classification(self, free: list[str], paid: list[str]) -> None:
+        self._free_models = list(dict.fromkeys(free))
+        self._paid_models = list(dict.fromkeys(paid if self.allow_paid else []))
+        self._preferred_models = list(dict.fromkeys([*self._free_models, *self._paid_models]))
+        self._classification_ts = time.monotonic()
+
+    def _ensure_classification(self) -> None:
+        if self._preferred_models and time.monotonic() - self._classification_ts < 300:
+            return
+        self.models()
+
+    def free_models(self, candidates: list[str] | None = None) -> list[str]:
+        """Return only models having an explicitly zero-cost text-chat endpoint."""
+        if not self.configured:
+            return []
+        if candidates is None:
+            if self._free_models and time.monotonic() - self._classification_ts < 300:
+                return list(self._free_models)
+            free, _paid = self._classify_models(self._raw_models())
+            self._set_classification(free, [])
+            return free
+        free, _paid = self._classify_models(candidates)
+        self._set_classification(free, [])
+        return free
+
+    def paid_models(self, candidates: list[str] | None = None) -> list[str]:
+        """Return text-chat models with non-zero pricing when paid fallback is allowed."""
+        if not self.configured or not self.allow_paid:
+            return []
+        if candidates is None:
+            self._ensure_classification()
+            return list(self._paid_models)
+        free, paid = self._classify_models(candidates)
+        self._set_classification(free, paid)
+        return paid
+
+    def text_models(self, candidates: list[str] | None = None, include_paid: bool = True) -> list[str]:
+        """Return free text models first, then paid text models when allowed."""
+        include_paid = bool(include_paid and self.allow_paid)
+        if candidates is None:
+            self._ensure_classification()
+            return list(self._free_models) + (list(self._paid_models) if include_paid else [])
+        free, paid = self._classify_models(candidates)
+        self._set_classification(free, paid if include_paid else [])
+        return free + (paid if include_paid else [])
 
     @staticmethod
     def _zero(value) -> bool:
@@ -89,12 +172,37 @@ class RouterAIAdapter:
         except (TypeError, ValueError):
             return False
 
-    def health(self, model: str) -> tuple[bool, str]:
-        """Probe a model with zero output tokens.
+    @staticmethod
+    def _content_from_response(result: dict) -> str | None:
+        """Extract text from OpenAI-compatible RouterAI chat responses."""
+        if not isinstance(result, dict):
+            return None
+        choices = result.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return None
+        choice = choices[0]
+        message = choice.get("message") or {}
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") in {"text", "output_text"} and item.get("text"):
+                        parts.append(str(item["text"]))
+                if parts:
+                    return "\n".join(parts).strip()
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return reasoning.strip()
+        text = choice.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        return None
 
-        This is opt-in only; the caller must first establish that the model's
-        endpoint pricing is zero if it wants to keep the global free-only rule.
-        """
+    def health(self, model: str) -> tuple[bool, str]:
+        """Probe a caller-approved text-chat model with one output token."""
         if not self.configured:
             return False, "API key not configured"
         try:
@@ -109,7 +217,7 @@ class RouterAIAdapter:
                     "provider": {"allow_fallbacks": False},
                 },
             )
-            content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
+            content = self._content_from_response(result)
             return bool(content), "" if content else "empty response"
         except error.HTTPError as exc:
             try:
@@ -121,37 +229,41 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str) -> str | None:
-        """Analyze using a caller-approved free model only."""
+        """Analyze with free-first ordering and optional paid fallback."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
-        try:
-            result = self._request(
-                "POST",
-                f"{BASE_URL}/chat/completions",
-                {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 500,
-                    "provider": {"allow_fallbacks": False},
-                },
-            )
-            content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
-            if not content:
-                self.last_error = "empty response"
-                return None
-            return str(content)
-        except error.HTTPError as exc:
+        self._ensure_classification()
+        candidates = list(dict.fromkeys([*self._free_models, model, *self._paid_models]))
+        last_error = ""
+        for candidate in candidates:
             try:
-                detail = exc.read().decode("utf-8", errors="replace")[:800]
-            except Exception:
-                detail = ""
-            self.last_error = f"HTTP {exc.code}: {detail}"
-            return None
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return None
+                result = self._request(
+                    "POST",
+                    f"{BASE_URL}/chat/completions",
+                    {
+                        "model": candidate,
+                        "messages": [
+                            {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0,
+                        "max_tokens": 500,
+                        "provider": {"allow_fallbacks": False},
+                    },
+                )
+                content = self._content_from_response(result)
+                if content:
+                    self.last_error = ""
+                    return content
+                last_error = f"{candidate}: empty response"
+            except error.HTTPError as exc:
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")[:800]
+                except Exception:
+                    detail = ""
+                last_error = f"{candidate}: HTTP {exc.code}: {detail}"
+            except Exception as exc:
+                last_error = f"{candidate}: {type(exc).__name__}: {exc}"
+        self.last_error = last_error or "empty response"
+        return None
