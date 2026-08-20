@@ -15,6 +15,10 @@ class AISettings(BaseModel):
     gemini_model: str = "gemini-2.5-flash"
     groq_model: str = "openai/gpt-oss-20b"
     openrouter_model: str = "openrouter/free"
+    # Для консенсуса используется ровно одна модель OpenRouter.
+    # Список сохраняется для совместимости со старыми конфигурациями,
+    # но дополнительные модели не должны превращать один запрос события
+    # в сотни параллельных API-запросов.
     openrouter_models: tuple[str, ...] = ()
     gemini_key: str = ""
     groq_key: str = ""
@@ -24,6 +28,21 @@ class AISettings(BaseModel):
     ai_timeout: float = Field(default=20.0, gt=0.0, le=300.0)
     ai_max_workers: int = Field(default=6, ge=1, le=8)
     ai_cooldown: float = Field(default=30.0, ge=0.0, le=300.0)
+
+    @field_validator("openrouter_models")
+    @classmethod
+    def normalize_openrouter_models(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Оставляем только первую уникальную модель для AI-консенсуса."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in value:
+            model = str(item).strip()
+            if model and model not in seen:
+                seen.add(model)
+                result.append(model)
+            if len(result) >= 1:
+                break
+        return tuple(result)
 
     @field_validator("ai_weights")
     @classmethod
