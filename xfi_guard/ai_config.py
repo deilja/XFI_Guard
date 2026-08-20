@@ -19,7 +19,9 @@ class AISettings(BaseModel):
     routerai_model: str = ""
     routerai_models: tuple[str, ...] = ()
     routerai_enabled: bool = False
-    routerai_allow_paid: bool = False
+    # Paid RouterAI models are allowed as a fallback, but the adapter orders
+    # verified free chat models before paid models.
+    routerai_allow_paid: bool = True
     gemini_key: str = ""
     groq_key: str = ""
     openrouter_key: str = ""
