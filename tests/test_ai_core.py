@@ -43,13 +43,24 @@ def test_analyze_falls_back_to_groq(monkeypatch):
         "groq_model": "groq-test",
     })
     analyzer = ai.AIAnalyzer()
-    analyzer.gemini = DummyGemini()
-    monkeypatch.setattr(analyzer, "_analyze_groq", lambda event: "ответ Groq")
+    calls = []
+
+    def fake_call(provider, model, prompt):
+        calls.append((provider, model))
+        if provider == "groq":
+            analyzer.last_provider = provider
+            analyzer.last_model = model
+            return "ответ Groq"
+        return None
+
+    monkeypatch.setattr(analyzer, "_call", fake_call)
 
     result = analyzer.analyze("health check")
 
     assert result == "ответ Groq"
     assert analyzer.last_provider == "groq"
+    assert analyzer.last_model == "groq-test"
+    assert calls == [("gemini", "gemini-test"), ("groq", "groq-test")]
 
 
 def test_analyze_without_any_provider_returns_clear_error(monkeypatch):
