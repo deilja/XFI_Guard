@@ -7,18 +7,12 @@ def _install_ai_analyzer_compat() -> None:
     """Expose a stable direct-analysis API with provider fallback."""
     from .ai import AIAnalyzer
 
-    if hasattr(AIAnalyzer, "analyze"):
-        return
-
     def analyze(self, event):
         self._sync_config()
-        if isinstance(event, dict):
-            return self.analyze_consensus(event)
-
-        prompt = str(event)
+        prompt = self._prompt(event) if isinstance(event, dict) else str(event)
         configured = self.available_providers()
         if not configured:
-            self.last_error = "no AI providers configured"
+            self.last_error = "AI-провайдеры не настроен"
             return None
 
         order = []
@@ -33,25 +27,25 @@ def _install_ai_analyzer_compat() -> None:
                 errors.append(f"{provider}: no model available")
                 continue
 
-            if provider == "routerai":
-                result = self.routerai.analyze(
-                    models[0],
-                    prompt,
-                    allow_paid=self.routerai_allow_paid,
-                )
-            else:
-                result = None
-                for model in models:
+            for model in models:
+                if provider == "routerai":
+                    result = self.routerai.analyze(
+                        model,
+                        prompt,
+                        allow_paid=self.routerai_allow_paid,
+                    )
+                    if result:
+                        self.last_provider = provider
+                        self.last_model = self.routerai.last_model or model
+                        self.last_error = ""
+                        return result
+                else:
                     result = self._call(provider, model, prompt)
                     if result:
-                        break
-
-            if result:
-                self.last_provider = provider
-                if provider == "routerai":
-                    self.last_model = self.routerai.last_model or models[0]
-                self.last_error = ""
-                return result
+                        self.last_provider = provider
+                        self.last_model = model
+                        self.last_error = ""
+                        return result
 
             provider_error = self.last_provider_errors.get(provider, "")
             if provider_error:
