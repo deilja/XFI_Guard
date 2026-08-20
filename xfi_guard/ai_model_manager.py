@@ -51,7 +51,7 @@ def _fetch(provider: str, key: str) -> list[dict]:
         return sorted(result, key=lambda x: x["id"])
     if provider == "routerai":
         adapter = RouterAIAdapter(key, timeout=15)
-        models = awaitable = adapter.free_models()
+        models = adapter.free_models()
         return sorted(({"id": model, "free": True} for model in models), key=lambda x: x["id"])
     raise ValueError(f"Неизвестный провайдер: {provider}")
 
