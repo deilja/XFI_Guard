@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-Provider = Literal["gemini", "groq", "openrouter"]
+Provider = Literal["gemini", "groq", "openrouter", "routerai"]
 
 
 class AISettings(BaseModel):
@@ -16,18 +16,23 @@ class AISettings(BaseModel):
     groq_model: str = "openai/gpt-oss-20b"
     openrouter_model: str = "openrouter/free"
     openrouter_models: tuple[str, ...] = ()
+    routerai_model: str = ""
+    routerai_models: tuple[str, ...] = ()
+    routerai_enabled: bool = False
+    routerai_allow_paid: bool = False
     gemini_key: str = ""
     groq_key: str = ""
     openrouter_key: str = ""
-    ai_weights: dict[Provider, float] = Field(default_factory=lambda: {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0})
+    routerai_key: str = ""
+    ai_weights: dict[Provider, float] = Field(default_factory=lambda: {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0, "routerai": 1.0})
     ai_min_consensus: float = Field(default=0.60, ge=0.0, le=1.0)
     ai_timeout: float = Field(default=20.0, gt=0.0, le=300.0)
     ai_max_workers: int = Field(default=6, ge=1, le=8)
     ai_cooldown: float = Field(default=30.0, ge=0.0, le=300.0)
 
-    @field_validator("openrouter_models")
+    @field_validator("openrouter_models", "routerai_models")
     @classmethod
-    def normalize_openrouter_models(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def normalize_model_list(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         seen: set[str] = set()
         result: list[str] = []
         for item in value:
@@ -35,14 +40,14 @@ class AISettings(BaseModel):
             if model and model not in seen:
                 seen.add(model)
                 result.append(model)
-            if len(result) >= 1:
+            if len(result) >= 50:
                 break
         return tuple(result)
 
     @field_validator("ai_weights")
     @classmethod
     def validate_weights(cls, value: dict[Provider, float]) -> dict[Provider, float]:
-        result = {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0}
+        result = {"gemini": 1.0, "groq": 1.0, "openrouter": 1.0, "routerai": 1.0}
         for provider, weight in value.items():
             if weight <= 0:
                 raise ValueError(f"AI weight for {provider} must be > 0")
