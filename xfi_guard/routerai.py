@@ -1,9 +1,9 @@
 """RouterAI adapter for XFI Guard.
 
-RouterAI exposes an OpenAI-compatible API.  This adapter is intentionally
+RouterAI exposes an OpenAI-compatible API. This adapter is intentionally
 standalone so the main AI engine can opt into it without making paid requests
-implicitly.  A model is considered eligible only when its endpoint pricing is
-explicitly zero for prompt and completion.
+implicitly. A model is considered eligible only when it has at least one
+working chat endpoint with explicitly zero prompt and completion pricing.
 """
 from __future__ import annotations
 
@@ -52,12 +52,31 @@ class RouterAIAdapter:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return []
 
-    def free_models(self, candidates: list[str] | None = None) -> list[str]:
-        """Return only models having an explicitly zero-cost endpoint.
+    @staticmethod
+    def _is_free_chat_endpoint(endpoint: dict) -> bool:
+        """Return whether an endpoint can serve free text chat requests."""
+        pricing = endpoint.get("pricing") or {}
+        if not (RouterAIAdapter._zero(pricing.get("prompt")) and RouterAIAdapter._zero(pricing.get("completion"))):
+            return False
+        try:
+            if int(endpoint.get("status", 0) or 0) < 0:
+                return False
+        except (TypeError, ValueError):
+            return False
 
-        RouterAI pricing is endpoint-specific, so model availability alone is
-        not sufficient to classify a model as free.
-        """
+        supported_apis = endpoint.get("supported_apis") or []
+        if supported_apis and "chat" not in {str(x).lower() for x in supported_apis}:
+            return False
+
+        architecture = endpoint.get("architecture") or {}
+        output_modalities = architecture.get("output_modalities") or []
+        if output_modalities and "text" not in {str(x).lower() for x in output_modalities}:
+            return False
+
+        return True
+
+    def free_models(self, candidates: list[str] | None = None) -> list[str]:
+        """Return only models having an explicitly zero-cost text-chat endpoint."""
         if not self.configured:
             return []
         candidates = candidates or self.models()
@@ -69,13 +88,8 @@ class RouterAIAdapter:
             try:
                 data = self._request("GET", f"{BASE_URL}/models/{author}/{slug}/endpoints")
                 endpoints = ((data.get("data") or {}).get("endpoints") or [])
-                for endpoint in endpoints:
-                    pricing = endpoint.get("pricing") or {}
-                    prompt = pricing.get("prompt")
-                    completion = pricing.get("completion")
-                    if self._zero(prompt) and self._zero(completion) and int(endpoint.get("status", 0) or 0) >= 0:
-                        result.append(model)
-                        break
+                if any(self._is_free_chat_endpoint(endpoint) for endpoint in endpoints):
+                    result.append(model)
             except error.HTTPError as exc:
                 self.last_error = f"{model}: HTTP {exc.code}"
             except Exception as exc:
@@ -89,11 +103,40 @@ class RouterAIAdapter:
         except (TypeError, ValueError):
             return False
 
-    def health(self, model: str) -> tuple[bool, str]:
-        """Probe a model with zero output tokens.
+    @staticmethod
+    def _content_from_response(result: dict) -> str | None:
+        """Extract text from OpenAI-compatible RouterAI chat responses."""
+        if not isinstance(result, dict):
+            return None
+        choices = result.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return None
+        choice = choices[0]
+        message = choice.get("message") or {}
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") in {"text", "output_text"} and item.get("text"):
+                        parts.append(str(item["text"]))
+                if parts:
+                    return "\n".join(parts).strip()
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return reasoning.strip()
+        text = choice.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        return None
 
-        This is opt-in only; the caller must first establish that the model's
-        endpoint pricing is zero if it wants to keep the global free-only rule.
+    def health(self, model: str) -> tuple[bool, str]:
+        """Probe a model with one output token.
+
+        The caller must first establish that the model has a zero-cost chat
+        endpoint when enforcing the global free-only policy.
         """
         if not self.configured:
             return False, "API key not configured"
@@ -109,7 +152,7 @@ class RouterAIAdapter:
                     "provider": {"allow_fallbacks": False},
                 },
             )
-            content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
+            content = self._content_from_response(result)
             return bool(content), "" if content else "empty response"
         except error.HTTPError as exc:
             try:
@@ -121,7 +164,7 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str) -> str | None:
-        """Analyze using a caller-approved free model only."""
+        """Analyze using a caller-approved free text-chat model only."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
@@ -140,11 +183,12 @@ class RouterAIAdapter:
                     "provider": {"allow_fallbacks": False},
                 },
             )
-            content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
+            content = self._content_from_response(result)
             if not content:
                 self.last_error = "empty response"
                 return None
-            return str(content)
+            self.last_error = ""
+            return content
         except error.HTTPError as exc:
             try:
                 detail = exc.read().decode("utf-8", errors="replace")[:800]
