@@ -72,11 +72,38 @@ def _notify_auto_blocks(results: list[dict]) -> None:
             )
 
 
+def _notify_ai_consensus(event: dict, result: dict) -> None:
+    if not result.get("verdicts"):
+        return
+    risk = result.get("winner", "unknown")
+    if risk not in {"high", "critical"}:
+        return
+    providers = ", ".join(result.get("providers", [])) or "нет"
+    verdict_lines = []
+    for item in result.get("verdicts", [])[:3]:
+        verdict_lines.append(
+            f"• {item['provider']} / {item['model']}: {item['risk'].upper()} ({item['confidence']:.0%}) — {item.get('reason', '')}"
+        )
+    ip = event.get("ip") or event.get("source_ip") or "не определён"
+    notify(
+        "🚨 XFI Guard — AI КОНСЕНСУС\n\n"
+        f"IP: {ip}\n"
+        f"Угроза: {risk.upper()}\n"
+        f"Общая уверенность: {result.get('confidence', 0):.0%}\n"
+        f"Согласие AI: {result.get('agreement', 0):.0%}\n"
+        f"Провайдеры: {providers}\n\n"
+        + "\n".join(verdict_lines)
+    )
+
+
 def run_forever(config: MonitorConfig) -> None:
     running = True
     state = StateStore(config.state_file)
     alerts = AlertManager(cooldown=config.telegram_cooldown_seconds) if config.telegram_enabled else None
-    ai = AIAnalyzer(config.ai_provider)
+    # AIAnalyzer itself loads all configured providers and runs consensus.
+    # Do not pin the monitor to one provider: that silently disables the other
+    # two providers during event analysis.
+    ai = AIAnalyzer()
     auto_blocker = AutoBlocker(
         enabled=config.auto_block_enabled,
         confidence=config.auto_block_confidence,
@@ -91,18 +118,27 @@ def run_forever(config: MonitorConfig) -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     LOG.info(
-        "XFI Guard monitor started; AI provider=%s; auto_block=%s; min_attempts=%s; confidence=%.2f",
-        config.ai_provider, config.auto_block_enabled, config.auto_block_min_attempts, config.auto_block_confidence,
+        "XFI Guard monitor started; AI providers=%s; auto_block=%s; min_attempts=%s; confidence=%.2f",
+        ",".join(ai.available_providers()) or "none", config.auto_block_enabled,
+        config.auto_block_min_attempts, config.auto_block_confidence,
     )
     while running:
         snapshot = collect_snapshot(config)
         events = collect_security_events(config, state)
         if ai.enabled():
             for event in events[:config.ai_max_events_per_cycle]:
-                analysis = ai.analyze(event)
-                if analysis:
-                    event["ai_provider"] = ai.provider
-                    event["ai_analysis"] = analysis
+                result = ai.analyze_consensus(event)
+                event["ai_consensus"] = result
+                event["ai_provider"] = ",".join(result.get("providers", []))
+                if result.get("verdicts"):
+                    event["ai_risk"] = result.get("winner")
+                    event["ai_confidence"] = result.get("confidence", 0)
+                LOG.info(
+                    "AI consensus: event=%s providers=%s risk=%s confidence=%.2f degraded=%s",
+                    event.get("event_type"), result.get("providers", []),
+                    result.get("winner"), result.get("confidence", 0), result.get("degraded", False),
+                )
+                _notify_ai_consensus(event, result)
 
         if events:
             defense_results = auto_blocker.evaluate(events)
