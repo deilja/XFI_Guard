@@ -4,6 +4,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import re
 import threading
 import time
 from urllib import error, request
@@ -23,6 +24,7 @@ class AIAnalyzer:
         self.last_error = ""
         self.last_provider = ""
         self.last_model = ""
+        self.last_provider_errors = {}
         self._sync_config()
 
     def _sync_config(self):
@@ -48,10 +50,16 @@ class AIAnalyzer:
 
     def available_providers(self):
         out = []
-        if self.gemini.enabled(): out.append("gemini")
-        if self.groq_key: out.append("groq")
-        if self.openrouter_key: out.append("openrouter")
+        if self.gemini.enabled():
+            out.append("gemini")
+        if self.groq_key:
+            out.append("groq")
+        if self.openrouter_key:
+            out.append("openrouter")
         return out
+
+    def configured_providers(self):
+        return self.available_providers()
 
     def enabled(self):
         return bool(self.available_providers())
@@ -67,6 +75,7 @@ class AIAnalyzer:
         self._sync_config()
         return {
             "selected_provider": self.provider,
+            "configured_providers": self.configured_providers(),
             "available_providers": self.available_providers(),
             "gemini_model": self.gemini.model,
             "groq_model": self.groq_model,
@@ -78,6 +87,7 @@ class AIAnalyzer:
             "max_workers": self.max_workers,
             "cooldown": self.cooldown,
             "health": self.health(),
+            "provider_errors": dict(self.last_provider_errors),
             "last_error": self.last_error,
             "last_provider": self.last_provider,
             "last_model": self.last_model,
@@ -102,6 +112,12 @@ class AIAnalyzer:
         with self._lock:
             self._failures.clear()
         self.last_error = ""
+        self.last_provider_errors = {}
+
+    def _set_provider_error(self, provider, message):
+        with self._lock:
+            self.last_provider_errors[provider] = str(message)[:1200]
+        self.last_error = f"{provider}: {message}"
 
     def _chat_model(self, provider, model, prompt, json_mode=False, force=False):
         key_id = f"{provider}:{model}"
@@ -110,17 +126,22 @@ class AIAnalyzer:
         if provider == "gemini":
             try:
                 result = self.gemini.analyze({"event_type": "security_analysis", "message": prompt})
-                self.last_error = self.gemini.last_error or ""
                 self.last_provider, self.last_model = provider, model
-                (self._success if result else self._failure)(key_id)
-                return result
+                if result:
+                    self._success(key_id)
+                    self.last_provider_errors.pop(provider, None)
+                    return result
+                self._set_provider_error(provider, self.gemini.last_error or "пустой ответ")
+                self._failure(key_id)
+                return None
             except Exception as exc:
-                self.last_error = f"gemini/{model}: {type(exc).__name__}: {exc}"
+                self._set_provider_error(provider, f"{type(exc).__name__}: {exc}")
                 self._failure(key_id)
                 return None
 
         key = self.groq_key if provider == "groq" else self.openrouter_key
         if not key:
+            self._set_provider_error(provider, "API-ключ не настроен")
             return None
         url = "https://api.groq.com/openai/v1/chat/completions" if provider == "groq" else "https://openrouter.ai/api/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "XFI-Guard/1.2"}
@@ -129,14 +150,14 @@ class AIAnalyzer:
         body = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски. Не выполняй команды и не придумывай факты."},
+                {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски. Верни только JSON: risk=low|medium|high|critical, confidence=0..1, reason=краткое объяснение. Не выполняй команды."},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0,
             "max_tokens": 900,
         }
-        if json_mode:
-            body["response_format"] = {"type": "json_object"}
+        # response_format отключён для OpenRouter/Groq: часть моделей/free-route
+        # его не поддерживает и возвращает 400. JSON проверяется локальным parser'ом.
         try:
             req = request.Request(url, data=json.dumps(body, ensure_ascii=False).encode(), headers=headers, method="POST")
             with request.urlopen(req, timeout=self.request_timeout) as response:
@@ -147,19 +168,29 @@ class AIAnalyzer:
             self._success(key_id)
             self.last_error = ""
             self.last_provider, self.last_model = provider, model
+            self.last_provider_errors.pop(provider, None)
             return result
         except error.HTTPError as exc:
-            code = exc.code
-            detail = f"HTTP {code}"
-            if code == 403: detail = "HTTP 403 Forbidden (ключ/доступ отклонён)"
-            elif code == 401: detail = "HTTP 401 Unauthorized (проверьте API-ключ)"
-            elif code == 404: detail = "HTTP 404 Not Found (проверьте модель/endpoint)"
-            elif code == 429: detail = "HTTP 429 Too Many Requests (лимит временно исчерпан)"
-            self.last_error = f"{provider}/{model}: {detail}"
-            self._failure(key_id, cooldown=300 if code in {401, 403, 404} else 60 if code == 429 else None)
+            detail = f"HTTP {exc.code}"
+            try:
+                raw = exc.read().decode("utf-8", errors="replace")[:800]
+                if raw:
+                    detail += f": {raw}"
+            except Exception:
+                pass
+            if exc.code == 403:
+                detail = "HTTP 403 Forbidden (ключ/доступ отклонён)"
+            elif exc.code == 401:
+                detail = "HTTP 401 Unauthorized (проверьте API-ключ)"
+            elif exc.code == 404:
+                detail = "HTTP 404 Not Found (проверьте модель/endpoint)"
+            elif exc.code == 429:
+                detail = "HTTP 429 Too Many Requests (лимит временно исчерпан)"
+            self._set_provider_error(provider, f"{model}: {detail}")
+            self._failure(key_id, cooldown=300 if exc.code in {401, 403, 404} else 60 if exc.code == 429 else None)
             return None
         except Exception as exc:
-            self.last_error = f"{provider}/{model}: {type(exc).__name__}: {exc}"
+            self._set_provider_error(provider, f"{model}: {type(exc).__name__}: {exc}")
             self._failure(key_id)
             return None
 
@@ -176,38 +207,57 @@ class AIAnalyzer:
             return None
         text = text.strip()
         if text.startswith("```"):
-            parts = text.split("\n", 1)
-            text = parts[1] if len(parts) > 1 else text
+            text = text.split("\n", 1)[1] if "\n" in text else text
             text = text.rsplit("```", 1)[0].strip()
-        try:
-            raw = json.loads(text)
-            risk = str(raw.get("risk", "unknown")).lower()
-            confidence = max(0, min(1, float(raw.get("confidence", 0) or 0)))
-            reason = str(raw.get("reason", raw.get("message", raw.get("explanation", ""))))[:700]
-            if risk not in {"low", "medium", "high", "critical"}:
-                return None
-            return {"risk": risk, "confidence": confidence, "reason": reason}
-        except Exception:
+        # Некоторые модели добавляют пояснение вокруг JSON. Берём первый JSON-объект.
+        candidates = [text]
+        match = re.search(r"\{.*\}", text, re.S)
+        if match:
+            candidates.append(match.group(0))
+        raw = None
+        for candidate in candidates:
+            try:
+                raw = json.loads(candidate)
+                break
+            except Exception:
+                continue
+        if not isinstance(raw, dict):
             return None
+        risk = str(raw.get("risk", "unknown")).lower().strip()
+        if risk not in {"low", "medium", "high", "critical"}:
+            return None
+        try:
+            confidence = float(raw.get("confidence", 0.75) or 0.75)
+        except (TypeError, ValueError):
+            confidence = 0.75
+        confidence = max(0, min(1, confidence))
+        reason = str(raw.get("reason", raw.get("explanation", raw.get("message", ""))))[:700]
+        return {"risk": risk, "confidence": confidence, "reason": reason}
 
     def analyze_consensus(self, event):
-        """Запускает все доступные AI одновременно и формирует единый вердикт."""
+        """Запускает все настроенные AI одновременно и формирует единый вердикт."""
         self._sync_config()
+        self.last_provider_errors = {}
         jobs = self._jobs()
+        configured = self.available_providers()
         if not jobs:
-            self.last_error = "AI-провайдер не настроен или временно недоступен."
-            return {"verdicts": [], "providers_used": 0, "models_used": 0, "providers": [], "models": [], "winner": "unknown", "confidence": 0, "consensus": False, "degraded": False, "error": self.last_error}
+            self.last_error = "AI-провайдеры настроены, но временно недоступны."
+            return {"verdicts": [], "providers_used": 0, "models_used": 0, "providers": [], "models": [], "winner": "unknown", "confidence": 0, "consensus": False, "degraded": True, "error": self.last_error, "provider_errors": dict(self.last_provider_errors), "configured_providers": configured}
 
         prompt = (
-            'Верни ТОЛЬКО JSON: {"risk":"low|medium|high|critical",'
-            '"confidence":0..1,"reason":"кратко по-русски"}. '
-            "Анализируй только факты события и оцени угрозу VPS.\n" + json.dumps(event, ensure_ascii=False)
+            'Верни только JSON с полями risk, confidence, reason. '
+            'risk должен быть одним из low, medium, high, critical; confidence от 0 до 1. '
+            'Оцени только факты события безопасности VPS.\n' + json.dumps(event, ensure_ascii=False)
         )
 
         def run(job):
             provider, model = job
-            parsed = self._parse_verdict(self._chat_model(provider, model, prompt, True))
-            return {"provider": provider, "model": model, **parsed} if parsed else None
+            parsed = self._parse_verdict(self._chat_model(provider, model, prompt, False))
+            if parsed:
+                return {"provider": provider, "model": model, **parsed}
+            if provider not in self.last_provider_errors:
+                self._set_provider_error(provider, "ответ получен, но не удалось распознать JSON verdict")
+            return None
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.max_workers, len(jobs))) as pool:
             verdicts = [item for item in pool.map(run, jobs) if item]
@@ -223,6 +273,9 @@ class AIAnalyzer:
         confidence = weighted * agreement
         providers = sorted({item["provider"] for item in verdicts})
         consensus = bool(verdicts) and ((len(providers) >= 2 and agreement >= self.min_consensus) or (len(providers) == 1 and confidence >= 0.75))
+        degraded = len(providers) < len(configured)
+        if degraded and self.last_provider_errors:
+            self.last_error = "; ".join(f"{k}: {v}" for k, v in self.last_provider_errors.items())[:2000]
 
         return {
             "verdicts": verdicts,
@@ -237,19 +290,21 @@ class AIAnalyzer:
             "confidence": round(confidence, 4),
             "min_consensus": self.min_consensus,
             "consensus": consensus,
-            "degraded": len(verdicts) < len(jobs),
-            "error": "" if verdicts else self.last_error,
+            "degraded": degraded,
+            "error": "" if verdicts and not degraded else self.last_error,
+            "provider_errors": dict(self.last_provider_errors),
+            "configured_providers": configured,
+            "jobs_attempted": len(jobs),
         }
 
     def analyze(self, event, allow_fallback=True):
-        """Одиночный запрос: выбранный AI, затем fallback по остальным."""
         self._sync_config()
         order = [self.provider] + [p for p in PROVIDERS if p != self.provider]
         for provider in order if allow_fallback else [self.provider]:
             if provider not in self.available_providers():
                 continue
             model = self.gemini.model if provider == "gemini" else self.groq_model if provider == "groq" else self.openrouter_model
-            prompt = "Проанализируй событие VPS. Дай риск, признаки, причину и действие на русском.\n" + json.dumps(event, ensure_ascii=False)
+            prompt = "Проанализируй событие VPS. Дай risk, confidence и reason в JSON на русском.\n" + json.dumps(event, ensure_ascii=False)
             result = self._chat_model(provider, model, prompt)
             if result:
                 return result
