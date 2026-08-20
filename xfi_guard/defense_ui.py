@@ -63,17 +63,22 @@ def _confirm_keyboard(action: str, ip: str):
     ]])
 
 
-def _critical_candidates():
+def _threat_items():
     data = collect_attack_surface()
     blocked = set(list_blocked_ips())
-    result = []
+    items = []
     for item in data.get("ips", []):
         ip = str(item.get("ip", "")).strip()
-        risk = str(item.get("risk", "")).lower()
-        score = int(item.get("risk_score", 0) or 0)
-        if ip and ip not in blocked and (risk == "critical" or score >= 80):
-            result.append(item)
-    return sorted(result, key=lambda x: int(x.get("risk_score", 0) or 0), reverse=True)
+        if not ip or ip in blocked:
+            continue
+        item = dict(item)
+        item["risk_score"] = int(item.get("risk_score", 0) or 0)
+        items.append(item)
+    return sorted(items, key=lambda x: x["risk_score"], reverse=True)
+
+
+def _critical_candidates():
+    return [x for x in _threat_items() if str(x.get("risk", "")).lower() == "critical" or x["risk_score"] >= 80]
 
 
 def _defense_text():
@@ -87,7 +92,7 @@ def _defense_text():
         lines.append("")
     if critical:
         lines.append("🚨 Критические угрозы:")
-        lines.extend(f"• {x.get('ip')} — {str(x.get('risk','critical')).upper()} {int(x.get('risk_score',0) or 0)}/100" for x in critical[:15])
+        lines.extend(f"• {x.get('ip')} — {str(x.get('risk','critical')).upper()} {x['risk_score']}/100" for x in critical[:15])
     else:
         lines.append("✅ Критических угроз для блокировки нет.")
     return "\n".join(lines)[:3900]
@@ -99,20 +104,40 @@ def _defense_inline():
     if critical:
         rows.append([InlineKeyboardButton(text=f"🚨 Заблокировать все критические ({len(critical)})", callback_data="manual:block_all_critical")])
         for item in critical[:8]:
-            ip = str(item.get("ip", "")); score = int(item.get("risk_score", 0) or 0)
+            ip = str(item.get("ip", "")); score = item["risk_score"]
             if ip: rows.append([InlineKeyboardButton(text=f"🚫 {ip} — {score}/100", callback_data=f"manual:block:{ip}")])
     rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="manual:refresh_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _threat_inline(items):
+    rows = []
+    if items:
+        rows.append([InlineKeyboardButton(text=f"🚨 Заблокировать все угрозы ({len(items)})", callback_data="manual:block_all_threats")])
+        critical = [x for x in items if str(x.get("risk", "")).lower() == "critical" or x["risk_score"] >= 80]
+        if critical:
+            rows.append([InlineKeyboardButton(text=f"🚨 Только критические ({len(critical)})", callback_data="manual:block_all_critical")])
+        for item in items[:20]:
+            ip = str(item.get("ip", "")); score = item["risk_score"]
+            risk = str(item.get("risk", "unknown")).upper()
+            if ip:
+                rows.append([InlineKeyboardButton(text=f"🚫 {ip} — {risk} {score}/100", callback_data=f"manual:block:{ip}")])
+    rows.append([InlineKeyboardButton(text="🔄 Обновить угрозы", callback_data="manual:refresh_threats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _wire_bot_audit() -> None:
     try:
         from . import bot as bot_module
-    except Exception: return
-    if getattr(bot_module, "_xfi_defense_audit_wired", False): return
+    except Exception:
+        return
+    if getattr(bot_module, "_xfi_defense_audit_wired", False):
+        return
     def audited_block(ip: str): return confirm_block(ip, actor="telegram_admin", reason="Telegram administrator confirmation")
     def audited_unblock(ip: str): return confirm_unblock(ip, actor="telegram_admin", reason="Telegram administrator confirmation")
-    bot_module.block_ip = audited_block; bot_module.unblock_ip = audited_unblock; bot_module._xfi_defense_audit_wired = True
+    bot_module.block_ip = audited_block
+    bot_module.unblock_ip = audited_unblock
+    bot_module._xfi_defense_audit_wired = True
 
 
 def install_defense_handlers(dp: Dispatcher) -> None:
@@ -164,7 +189,7 @@ def install_defense_handlers(dp: Dispatcher) -> None:
         if not _admin(m): return
         await state.clear(); items=_critical_candidates()
         if not items: await m.answer(_defense_text(), reply_markup=defense_menu()); return
-        preview="\n".join(f"• {x.get('ip')} — {x.get('risk','critical').upper()} {int(x.get('risk_score',0) or 0)}/100" for x in items[:20])
+        preview="\n".join(f"• {x.get('ip')} — {x.get('risk','critical').upper()} {x['risk_score']}/100" for x in items[:20])
         await m.answer(f"⚠️ Подтвердите массовую блокировку\n\nБудут заблокированы все текущие критические IP ({len(items)}):\n\n{preview}\n\nДействие выполнит UFW DENY.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"🚨 Заблокировать все ({len(items)})", callback_data="manual:block_all_critical"), InlineKeyboardButton(text="❌ Отмена", callback_data="manual:cancel")]]))
 
     @dp.message(F.text == "🔄 Обновить список")
@@ -179,43 +204,52 @@ def install_defense_handlers(dp: Dispatcher) -> None:
         if uid not in ids: await callback.answer("Нет доступа", show_alert=True); return
         parts=callback.data.split(":",2)
         if len(parts)<2: await callback.answer("Некорректное действие", show_alert=True); return
-        if parts[1]=="cancel":
+        action=parts[1]
+        if action=="cancel":
             await callback.answer("Отменено")
             try: await callback.message.edit_text(_defense_text(), reply_markup=_defense_inline())
             except Exception: pass
             return
-        if parts[1]=="refresh_menu":
+        if action=="refresh_menu":
             await callback.answer("Обновлено")
             try: await callback.message.edit_text(_defense_text(), reply_markup=_defense_inline())
             except Exception: pass
             return
-        if parts[1]=="block_all_critical":
-            if not _action_once(f"bulk:{uid}"):
+        if action=="refresh_threats":
+            items=_threat_items()
+            await callback.answer("Угрозы обновлены")
+            try: await callback.message.edit_text(_threat_text(items), reply_markup=_threat_inline(items))
+            except Exception: pass
+            return
+        if action in {"block_all_critical", "block_all_threats"}:
+            key=f"bulk:{action}:{uid}"
+            if not _action_once(key):
                 await callback.answer("Эта операция уже выполняется", show_alert=True); return
-            items=_critical_candidates(); ok_count=0; failed=[]
+            items=_critical_candidates() if action=="block_all_critical" else _threat_items()
+            ok_count=0; failed=[]
             for item in items:
                 ip=str(item.get("ip",""))
                 try:
-                    ok,msg=confirm_block(ip,actor=str(uid),reason="Manual bulk block of all critical threats",metadata={"risk_score":item.get("risk_score"),"risk":item.get("risk")})
+                    ok,msg=confirm_block(ip,actor=str(uid),reason="Manual bulk block from threat menu",metadata={"risk_score":item.get("risk_score"),"risk":item.get("risk")})
                     if ok: ok_count += 1
                     else: failed.append(f"{ip}: {msg}")
                 except (ValueError,OSError) as exc: failed.append(f"{ip}: {exc}")
             await callback.answer("Готово" if not failed else "Завершено с ошибками", show_alert=True)
-            result=_defense_text()+f"\n\nРезультат: заблокировано {ok_count}, ошибок {len(failed)}"
-            try: await callback.message.edit_text(result[:3900], reply_markup=_defense_inline())
+            items=_threat_items()
+            result=_threat_text(items)+f"\n\nРезультат: заблокировано {ok_count}, ошибок {len(failed)}"
+            try: await callback.message.edit_text(result[:3900], reply_markup=_threat_inline(items))
             except Exception: pass
             return
         if len(parts)!=3: await callback.answer("Некорректный IP", show_alert=True); return
-        action,ip=parts[1],parts[2]
-        if not _action_once(f"{action}:{uid}:{ip}"):
+        ip=parts[2]
+        if not _action_once(f"block:{uid}:{ip}"):
             await callback.answer("Эта операция уже выполняется", show_alert=True); return
-        try:
-            if action=="block": ok,message=confirm_block(ip,actor=str(uid),reason="Manual IP block from Telegram")
-            elif action=="unblock": ok,message=confirm_unblock(ip,actor=str(uid),reason="Manual IP unblock from Telegram")
-            else: ok,message=False,"Неизвестное действие"
+        try: ok,message=confirm_block(ip,actor=str(uid),reason="Manual IP block from Telegram")
         except (ValueError,OSError) as exc: ok,message=False,str(exc)
         await callback.answer("Выполнено" if ok else "Ошибка", show_alert=True)
-        try: await callback.message.edit_text(("✅ " if ok else "❌ ")+message+"\n\n"+_defense_text(), reply_markup=_defense_inline())
+        try:
+            items=_threat_items()
+            await callback.message.edit_text(("✅ " if ok else "❌ ")+message+"\n\n"+_threat_text(items), reply_markup=_threat_inline(items))
         except Exception: pass
 
     @dp.message(F.text == "📋 Заблокированные IP")
@@ -226,9 +260,8 @@ def install_defense_handlers(dp: Dispatcher) -> None:
     @dp.message(F.text == "🧮 Рейтинг угроз")
     async def threat_ranking_button(m):
         if not _admin(m): return
-        data=collect_attack_surface(); items=[x for x in data.get("ips",[]) if not x.get("blocked")]; items.sort(key=lambda x:int(x.get("risk_score",0) or 0),reverse=True)
-        text="\n".join(f"{i+1}. {x.get('ip')} — {x.get('risk','unknown').upper()} {x.get('risk_score',0)}/100 | {x.get('events',0)} событий" for i,x in enumerate(items[:20])) or "Активных угроз не обнаружено."
-        await m.answer("🧮 Рейтинг угроз\n\n"+text, reply_markup=defense_menu())
+        items=_threat_items()
+        await m.answer(_threat_text(items), reply_markup=_threat_inline(items))
 
     @dp.message(Command("threats"))
     async def threats_command(m):
@@ -245,3 +278,13 @@ def install_defense_handlers(dp: Dispatcher) -> None:
     async def defense_history_command(m):
         if not _admin(m): return
         await defense_history_button(m)
+
+
+def _threat_text(items) -> str:
+    if not items:
+        return "🧮 Рейтинг угроз\n\n✅ Активных угроз не обнаружено."
+    lines=["🧮 Рейтинг угроз", "", f"Всего активных угроз: {len(items)}", ""]
+    for i,x in enumerate(items[:20],1):
+        lines.append(f"{i}. {x.get('ip')} — {str(x.get('risk','unknown')).upper()} {x['risk_score']}/100 | {x.get('events',0)} событий")
+    if len(items)>20: lines.append(f"\n… ещё {len(items)-20} угроз")
+    return "\n".join(lines)[:3900]
