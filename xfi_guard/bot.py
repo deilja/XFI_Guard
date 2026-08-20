@@ -96,7 +96,19 @@ def build_dispatcher():
     async def force_update_command(message): await force_update_button(message)
     @dp.message(F.text=="🤖 AI")
     async def ai_button(message):
-        if admin(message): await message.answer("🤖 Центр AI\n\nВыберите действие.",reply_markup=kb([["🟢 Gemini","🔵 Groq"],["🟣 OpenRouter","🔀 Выбрать AI"],["🧩 API модели"],["🔑 Ключ Gemini","🔑 Ключ Groq"],["🧠 Модель Gemini","🧠 Модель Groq"],["🧪 Проверить AI","ℹ️ Статус AI"],["🩺 Здоровье AI","🔄 Синхронизация AI"],["📊 Консенсус AI","🧹 Сброс здоровья AI"],["⬅️ Главное меню"]]))
+        if admin(message):
+            await message.answer(
+                "🤖 AI ЦЕНТР\n\n"
+                "Единый консилиум Gemini + Groq + OpenRouter.\n"
+                "Выбор модели выполняется через API провайдера.",
+                reply_markup=kb([
+                    ["🧩 API модели"],
+                    ["🧪 Проверить AI","📊 Консенсус AI"],
+                    ["🩺 Здоровье AI","ℹ️ Статус AI"],
+                    ["🔄 Синхронизация AI"],
+                    ["⬅️ Главное меню"],
+                ]),
+            )
     @dp.message(F.text=="🚫 Блокировка IP")
     async def block_button(message):
         if admin(message): await message.answer("🚫 Управление защитой IP\n\nТолько ручное действие администратора. AI не блокирует IP автоматически.",reply_markup=main_kb())
