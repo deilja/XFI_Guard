@@ -15,7 +15,7 @@ _NON_CHAT_MARKERS = (
     "embedding", "moderation", "rerank", "whisper", "tts", "speech", "audio", "music",
     "lyria", "veo", "flux", "seedance", "seedream", "kling", "sora", "imagine",
     "recraft", "riverflow", "gpt-image", "mai-image", "qwen-image", "gemini-image",
-    "image", "video", "krea", "hailuo", "wan-", "runway",
+    "image", "video", "krea", "hailuo", "wan-", "runway", "happyhorse",
 )
 
 
@@ -56,12 +56,7 @@ class RouterAIAdapter:
 
     @staticmethod
     def _is_chat_endpoint(endpoint: dict) -> bool:
-        """Return True only for endpoints usable by /chat/completions.
-
-        RouterAI exposes endpoint capabilities through ``supported_apis`` and
-        output modalities. Older/mock responses may omit those fields, so the
-        absence of capability metadata remains compatible with the legacy API.
-        """
+        """Return True only for endpoints usable by /chat/completions."""
         apis = endpoint.get("supported_apis")
         if apis:
             normalized = {str(x).lower() for x in apis}
@@ -107,7 +102,15 @@ class RouterAIAdapter:
         if not force and self._free_cache and time.monotonic() - self._free_cache_ts < self.cache_ttl:
             allowed = set(candidates or self._models_cache or self.models())
             return [m for m in self._free_cache if m in allowed]
-        candidates = [m for m in (candidates or self.models(force=force)) if self._is_chat_model(m)]
+
+        if candidates is not None:
+            source = candidates
+        elif self._models_cache and not force:
+            source = self._models_cache
+        else:
+            source = self.models(force=force)
+        candidates = [m for m in source if self._is_chat_model(m)]
+
         result: list[str] = []
         for model in candidates:
             try:
