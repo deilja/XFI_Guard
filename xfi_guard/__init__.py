@@ -107,6 +107,7 @@ def _install_ai_analyzer_compat() -> None:
         return None
 
     AIAnalyzer._analyze_groq = _analyze_groq
+    AIAnalyzer._configured_models = _configured_models
     AIAnalyzer.analyze = analyze
 
 
