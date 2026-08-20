@@ -20,7 +20,7 @@ from .vpn import collect_vpn_checks
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["⚙️ 3X-UI","🤖 AI"],["🛡 Картина атак","🧠 Security Brain"],["🚫 Блокировка IP"],["🔄 Проверить сейчас"],["🔄 Обновить XFI Guard","⚡ Принудительное обновление"],["❓ Помощь"]])
+def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["⚙️ 3X-UI","🤖 AI"],["🛡 Картина атак","🧠 Security Brain"],["🚫 Блокировка IP"],["🔄 Проверить сейчас"],["🔄 Обновить XFI Guard","⚡ Принудительное обновление"],["❓ Помощь"],["◀️ Назад","🏠 Главная"]])
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
@@ -102,6 +102,11 @@ def build_dispatcher():
     @dp.message(F.text=="❓ Помощь")
     async def help_button(message):
         if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты",reply_markup=main_kb())
+    @dp.message(F.text.in_({"◀️ Назад","🏠 Главная"}))
+    async def navigation_button(message,state:FSMContext):
+        if not admin(message): return
+        await state.clear()
+        await message.answer("🏠 Главное меню",reply_markup=main_kb())
     @dp.message(F.text=="⬅️ Главное меню")
     async def back_main(message,state:FSMContext):
         if admin(message): await state.clear(); await message.answer("🏠 Главное меню",reply_markup=main_kb())
