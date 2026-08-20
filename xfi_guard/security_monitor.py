@@ -8,18 +8,34 @@ from .ai_decision import create as create_ai_decision
 from .attack_surface import collect_attack_surface
 from .telegram_alerts import send_alert
 STATE_FILE=Path(os.getenv("XFI_GUARD_MONITOR_STATE","/var/lib/xfi-guard/security_monitor.json"))
+ALERT_COOLDOWN=int(os.getenv("XFI_GUARD_ALERT_COOLDOWN","3600"))
+
 def _load():
     try:
-        data=json.loads(STATE_FILE.read_text(encoding="utf-8")); return data if isinstance(data,dict) else {"seen":{},"alerts":[]}
-    except (OSError,ValueError): return {"seen":{},"alerts":[]}
+        data=json.loads(STATE_FILE.read_text(encoding="utf-8")); return data if isinstance(data,dict) else {"seen":{},"alerts":[],"notified":{}}
+    except (OSError,ValueError): return {"seen":{},"alerts":[],"notified":{}}
+
 def _save(data):
     STATE_FILE.parent.mkdir(parents=True,exist_ok=True); STATE_FILE.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding="utf-8")
     try: STATE_FILE.chmod(0o600)
     except OSError: pass
+
 def _fingerprint(item):
     raw="|".join(str(item.get(k,"")) for k in ("ip","risk_score","risk","events","sources","reasons")); return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+def _notification_key(item):
+    ip=str(item.get("ip","")).strip(); risk=str(item.get("risk","unknown")).lower(); return f"{ip}:{risk}"
+
+def _should_notify(state,item,now):
+    key=_notification_key(item); previous=state.setdefault("notified",{}).get(key)
+    if not previous: return True
+    try: last=float(previous.get("timestamp",0)); last_score=int(previous.get("score",0) or 0)
+    except (TypeError,ValueError): return True
+    score=int(item.get("risk_score",0) or 0)
+    return (now-last)>=ALERT_COOLDOWN or score>=last_score+10
+
 def scan_once(threshold=60,max_ips=5,notify=True):
-    state=_load(); surface=collect_attack_surface(); previous=state.setdefault("seen",{}); candidates=[]
+    state=_load(); surface=collect_attack_surface(); previous=state.setdefault("seen",{}); candidates=[]; now=time.time()
     for item in surface.get("ips",[]):
         ip=str(item.get("ip","")).strip()
         if not ip: continue
@@ -30,15 +46,20 @@ def scan_once(threshold=60,max_ips=5,notify=True):
         event={"ip":item.get("ip"),"risk_score":item.get("risk_score"),"risk":item.get("risk"),"events":item.get("events"),"sources":item.get("sources"),"reasons":item.get("reasons")}
         consensus=analyzer.analyze_consensus(event); decision=create_ai_decision(event,consensus,state_file=STATE_FILE.with_name("ai_decisions.json"))
         alert={"id":_fingerprint(item),"decision_id":decision["id"],"timestamp":datetime.now(timezone.utc).isoformat(),"ip":item.get("ip"),"score":item.get("risk_score"),"risk":item.get("risk"),"consensus":consensus}; alerts.append(alert)
-        if notify: send_alert(alert)
+        if notify and _should_notify(state,item,now):
+            try:
+                send_alert(alert)
+                state.setdefault("notified",{})[_notification_key(item)]={"timestamp":now,"score":int(item.get("risk_score",0) or 0),"decision_id":decision["id"]}
+            except Exception as exc:
+                alert["notification_error"]=f"{type(exc).__name__}: {exc}"
     state["alerts"]=(state.get("alerts",[])+alerts)[-200:]; state["updated_at"]=datetime.now(timezone.utc).isoformat(); _save(state); return {"alerts":alerts,"active_count":surface.get("active_count",0),"scanned":len(surface.get("ips",[]))}
+
 def run_forever(interval=300,threshold=60,notify=False):
-    # Keep the legacy default quiet for direct/test callers. The daemon opts
-    # into notifications explicitly on each scheduled scan.
     scan_once(threshold=threshold, notify=notify)
     while True:
         try: scan_once(threshold=threshold, notify=True)
         except Exception as exc:
             data=_load(); data.setdefault("alerts",[]).append({"timestamp":datetime.now(timezone.utc).isoformat(),"error":f"{type(exc).__name__}: {exc}"}); data["alerts"]=data["alerts"][-200:]; _save(data)
         time.sleep(max(30,interval))
+
 if __name__=="__main__": run_forever(int(os.getenv("XFI_GUARD_MONITOR_INTERVAL","300")),int(os.getenv("XFI_GUARD_MONITOR_THRESHOLD","60")),notify=True)
