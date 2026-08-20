@@ -9,6 +9,7 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardBut
 from .ai_ui import install_ai_handlers
 from .ai_center import install_ai_center_handlers
 from .ai_model_manager import install_ai_model_manager
+from .ai_keys_ui import install_ai_key_handlers
 from .openrouter_ui import install_openrouter_handlers
 from .xui_ui import install_xui_handlers
 from .alert_callbacks import register_alert_callbacks
@@ -25,7 +26,7 @@ def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
-    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp)
+    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
@@ -100,8 +101,10 @@ def build_dispatcher():
             await message.answer(
                 "🤖 AI ЦЕНТР\n\n"
                 "Единый консилиум Gemini + Groq + OpenRouter.\n"
-                "Выбор модели выполняется через API провайдера.",
+                "Модели выбираются через API провайдера.\n"
+                "API-ключи настраиваются отдельно.",
                 reply_markup=kb([
+                    ["🔑 API ключи"],
                     ["🧩 API модели"],
                     ["🧪 Проверить AI","📊 Консенсус AI"],
                     ["🩺 Здоровье AI","ℹ️ Статус AI"],
