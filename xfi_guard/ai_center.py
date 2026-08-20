@@ -22,11 +22,14 @@ def ai_center_menu():
 
 def build_health_report(data:dict)->str:
     lines=["🩺 Здоровье AI",""]
-    for item in data.get("results") or []:
+    results=data.get("results") or []
+    if not results:
+        return "\n".join(["🩺 Здоровье AI", "", "Нет доступных AI-провайдеров", "Рабочих AI: 0/0"])[:3900]
+    for item in results:
         mark="🟢" if item.get("ok") else "🔴"
         err=f" — {item.get('error')}" if not item.get("ok") and item.get("error") else ""
         lines.append(f"{mark} {item.get('provider')}/{item.get('model')}: {item.get('latency_ms',0)} ms{err}")
-    lines += ["",f"Рабочих AI: {sum(bool(x.get('ok')) for x in data.get('results') or [])}/{len(PROVIDERS)}"]
+    lines += ["",f"Рабочих AI: {sum(bool(x.get('ok')) for x in results)}/{len(PROVIDERS)}"]
     return "\n".join(lines)[:3900]
 
 def consensus_report(status:dict)->str:
@@ -44,14 +47,14 @@ def install_ai_center_handlers(dp:Dispatcher)->None:
     @dp.message(F.text == "🩺 Здоровье AI")
     async def health(m):
         if not _admin(m): return
-        await m.answer("⏳ Проверяю Gemini, Groq и OpenRouter...")
+        await m.answer("⏳ Проверяю AI-провайдеры...")
         try: await m.answer(build_health_report(await asyncio.to_thread(run_health_check)),reply_markup=ai_center_menu())
         except Exception as exc: await m.answer(f"❌ AI health: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
 
     @dp.message(F.text == "🧪 Проверить все AI")
     async def check_all(m):
         if not _admin(m): return
-        await m.answer("⏳ Реальная проверка API трёх бесплатных AI...")
+        await m.answer("⏳ Реальная проверка AI...")
         try: await m.answer(build_health_report(await asyncio.to_thread(run_health_check)),reply_markup=ai_center_menu())
         except Exception as exc: await m.answer(f"❌ Проверка AI: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
 

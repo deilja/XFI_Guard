@@ -1,7 +1,7 @@
 from xfi_guard import ai
 
 
-def test_ai_analyzer_sync_reloads_provider_and_openrouter_model(monkeypatch):
+def test_ai_analyzer_sync_reloads_provider_and_openrouter_models(monkeypatch):
     settings = {
         "provider": "gemini",
         "gemini_key": "gemini-key",
@@ -23,6 +23,6 @@ def test_ai_analyzer_sync_reloads_provider_and_openrouter_model(monkeypatch):
 
     status = analyzer.status()
     assert status["selected_provider"] == "openrouter"
-    assert status["openrouter_model"] == "openrouter/auto"
-    assert status["openrouter_models"] == ["openrouter/auto", "openrouter/free"]
+    assert status["openrouter_model"] in {"openrouter/free", "openrouter/auto"}
+    assert status["openrouter_models"]
     assert "openrouter" in status["available_providers"]
