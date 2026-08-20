@@ -34,3 +34,18 @@ async def test_safe_callback_answer_reraises_other_bad_request(monkeypatch):
 
     with pytest.raises(_ExpiredCallbackError, match="message is not modified"):
         await menu_manager._safe_callback_answer(callback)
+
+
+def test_inline_menu_adds_bottom_navigation():
+    markup = menu_manager.InlineMenuMarkup(keyboard=[["📊 Статус"]])
+    texts = [button.text for row in markup.inline_keyboard for button in row]
+    assert texts[-2:] == ["◀️ Назад", "🏠 Главная"]
+
+
+def test_main_menu_does_not_duplicate_bottom_navigation():
+    markup = menu_manager.InlineMenuMarkup(
+        keyboard=[["📊 Статус", "🚫 Блокировка IP"], ["◀️ Назад", "🏠 Главная"]]
+    )
+    texts = [button.text for row in markup.inline_keyboard for button in row]
+    assert texts.count("◀️ Назад") == 0
+    assert texts.count("🏠 Главная") == 0
