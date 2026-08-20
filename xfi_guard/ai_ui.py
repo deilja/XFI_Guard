@@ -4,10 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from urllib import request
+from urllib import error, request
 
 from aiogram import F, Dispatcher
-from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
@@ -47,7 +46,8 @@ def _ai_menu():
         ["🔑 Ключ Gemini", "🔑 Ключ Groq"], ["🧠 Модель Gemini", "🧠 Модель Groq"],
         ["📋 Модели Gemini", "📋 Модели Groq"],
         ["✏️ Своя модель Gemini", "✏️ Своя модель Groq"],
-        ["🧪 Проверить AI", "ℹ️ Статус AI"], ["⬅️ Главное меню"],
+        ["🧪 Проверить AI", "🧪 Проверить Groq"], ["ℹ️ Статус AI"],
+        ["⬅️ Главное меню"],
     ])
 
 
@@ -74,6 +74,48 @@ def _fetch_gemini_models(key: str) -> list[str]:
         if model_id.startswith("gemini-") and "generateContent" in (item.get("supportedGenerationMethods", []) or []):
             result.append(model_id)
     return sorted(set(result))
+
+
+def _groq_diagnostics(key: str, preferred_model: str) -> dict:
+    """Проверяет Groq models endpoint и делает минимальный chat-запрос."""
+    models_url = "https://api.groq.com/openai/v1/models"
+    chat_url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "XFI-Guard/1.2"}
+    try:
+        req = request.Request(models_url, headers=headers, method="GET")
+        with request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode())
+        available = sorted({str(x.get("id")) for x in data.get("data", []) if x.get("id")})
+    except error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:500]
+        return {"ok": False, "stage": "models", "error": f"HTTP {exc.code}: {body}"}
+    except Exception as exc:
+        return {"ok": False, "stage": "models", "error": f"{type(exc).__name__}: {exc}"}
+
+    candidates = [preferred_model, "openai/gpt-oss-20b", "llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+    model = next((x for x in candidates if x and x in available), None)
+    if not model:
+        return {"ok": False, "stage": "model", "error": f"Модель {preferred_model} недоступна. Доступных моделей: {len(available)}", "models": available[:30]}
+
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Ответь одним словом: OK"}],
+        "temperature": 0,
+        "max_tokens": 8,
+    }
+    try:
+        req = request.Request(chat_url, data=json.dumps(body).encode(), headers=headers, method="POST")
+        with request.urlopen(req, timeout=20) as response:
+            payload = json.loads(response.read().decode())
+        answer = ((payload.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
+        if not answer:
+            return {"ok": False, "stage": "chat", "model": model, "error": "Groq вернул пустой ответ"}
+        return {"ok": True, "model": model, "answer": answer, "models": available}
+    except error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")[:700]
+        return {"ok": False, "stage": "chat", "model": model, "error": f"HTTP {exc.code}: {body}", "models": available}
+    except Exception as exc:
+        return {"ok": False, "stage": "chat", "model": model, "error": f"{type(exc).__name__}: {exc}", "models": available}
 
 
 def install_ai_handlers(dp: Dispatcher) -> None:
@@ -230,6 +272,23 @@ def install_ai_handlers(dp: Dispatcher) -> None:
             await m.answer(f"❌ AI не настроен. {analyzer.last_error or 'Добавьте API-ключ.'}", reply_markup=_ai_menu()); return
         result = await asyncio.to_thread(analyzer.analyze, {"event_type": "health_check", "severity": "info", "message": "Проверка AI XFI Guard. Ответь: AI работает."})
         await m.answer(("✅ AI работает\n\n" + result[:3500]) if result else ("❌ AI не вернул ответ.\n\n" + (analyzer.last_error or "Неизвестная ошибка")), reply_markup=_ai_menu())
+
+    @dp.message(F.text == "🧪 Проверить Groq")
+    async def test_groq(m):
+        if not _admin(m): return
+        cfg = load(); key = cfg.get("groq_key") or os.getenv("GROQ_API_KEY", "")
+        if not key:
+            await m.answer("❌ Groq API-ключ не настроен.", reply_markup=_ai_menu()); return
+        await m.answer("🔎 Проверяю Groq API и доступность модели...")
+        result = await asyncio.to_thread(_groq_diagnostics, key, cfg.get("groq_model") or "openai/gpt-oss-20b")
+        if result.get("ok"):
+            await m.answer(f"✅ Groq работает\n\nEndpoint: https://api.groq.com/openai/v1\nМодель: {result['model']}\nОтвет: {result['answer']}\nДоступных моделей: {len(result.get('models', []))}", reply_markup=_ai_menu())
+        else:
+            details = result.get("error", "Неизвестная ошибка")
+            extra = ""
+            if result.get("models"):
+                extra = "\n\nДоступные модели:\n" + "\n".join(result["models"][:20])
+            await m.answer(f"❌ Groq не прошёл проверку\n\nЭтап: {result.get('stage', '-')}\n{details}{extra}"[:3900], reply_markup=_ai_menu())
 
     @dp.message(F.text == "ℹ️ Статус AI")
     async def ai_status(m):
