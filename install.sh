@@ -11,7 +11,7 @@ ask(){ local __v="$1"; shift; local __x=""; if [[ -r "$TTY" ]]; then IFS= read -
 command -v apt-get >/dev/null || die "Поддерживаются Ubuntu/Debian"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y git ca-certificates python3 python3-venv python3-pip nginx openssl certbot python3-certbot-nginx
+apt-get install -y git ca-certificates python3 python3-venv python3-pip nginx openssl certbot python3-certbot-nginx fail2ban
 
 PRESERVE_DIR="$(mktemp -d)"
 cleanup(){ rm -rf "$PRESERVE_DIR"; }
@@ -19,7 +19,6 @@ trap cleanup EXIT
 preserve_file(){ local src="$1" dst="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')"; [[ -f "$src" ]] || return 0; cp -a "$src" "$dst"; log "Сохранена конфигурация: $src"; }
 restore_file(){ local src="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')" dst="$1"; [[ -f "$src" ]] || return 0; install -d "$(dirname "$dst")"; cp -a "$src" "$dst"; chmod 600 "$dst" 2>/dev/null || true; log "Восстановлена конфигурация: $dst"; }
 
-# Preserve secrets before any git reset or installer prompts.
 preserve_file /etc/xfi-guard/bot.env
 preserve_file /var/lib/xfi-guard/ai.json
 preserve_file "$INSTALL_DIR/.env"
@@ -42,6 +41,18 @@ restore_file /etc/xfi-guard/bot.env
 restore_file /var/lib/xfi-guard/ai.json
 restore_file "$INSTALL_DIR/.env"
 restore_file "$INSTALL_DIR/.env.local"
+
+# XFI Guard owns a dedicated Fail2Ban jail. Fail2Ban is the timed enforcement
+# layer so automatic threat bans expire after exactly one week.
+install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+install -m 0644 config/fail2ban/filter.d/xfi-guard.conf /etc/fail2ban/filter.d/xfi-guard.conf
+install -m 0644 config/fail2ban/jail.d/xfi-guard.conf /etc/fail2ban/jail.d/xfi-guard.conf
+touch /var/log/xfi-guard/fail2ban-sync.log
+chmod 0640 /var/log/xfi-guard/fail2ban-sync.log
+systemctl enable --now fail2ban
+fail2ban-client reload || systemctl restart fail2ban
+fail2ban-client status xfi-guard >/dev/null || die "Fail2Ban jail xfi-guard не запустился"
+
 install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
 
 printf '\n========================================\n XFI Guard — первоначальная настройка\n========================================\n\n'
@@ -52,7 +63,6 @@ EXISTING_CONFIG=0
 [[ -f /etc/xfi-guard/bot.env ]] && EXISTING_CONFIG=1
 if [[ "$EXISTING_CONFIG" -eq 1 ]]; then
   log "Найдена существующая конфигурация. Секреты будут сохранены; повторный ввод не требуется."
-  # Load existing values for service setup without printing secrets.
   _load_bot_env(){ while IFS= read -r line; do [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue; key="${line%%=*}"; value="${line#*=}"; case "$key" in XFI_GUARD_BOT_TOKEN) BOT_TOKEN="$value";; XFI_GUARD_ADMIN_IDS) ADMIN_IDS="$value";; XFI_GUARD_WEBHOOK_DOMAIN) WEBHOOK_DOMAIN="$value";; esac; done < /etc/xfi-guard/bot.env; }
   _load_bot_env
 else
@@ -123,6 +133,6 @@ if [[ -n "$BOT_TOKEN" ]]; then
   sleep 2
   systemctl is-active --quiet xfi-guard-bot || { journalctl -u xfi-guard-bot -n 80 --no-pager || true; die "Telegram bot не запустился"; }
 fi
-log "Установка/обновление завершено; существующие данные сохранены."
-printf '\nMonitor: systemctl status xfi-guard --no-pager\nLogs:    journalctl -u xfi-guard -f\nJSONL:   /var/log/xfi-guard/monitor.jsonl\n'
+log "Установка/обновление завершено; Fail2Ban xfi-guard активен, bantime=7d."
+printf '\nMonitor: systemctl status xfi-guard --no-pager\nLogs:    journalctl -u xfi-guard -f\nJSONL:   /var/log/xfi-guard/monitor.jsonl\nFail2Ban: fail2ban-client status xfi-guard\n'
 [[ -z "$BOT_TOKEN" ]] || printf 'Bot:     systemctl status xfi-guard-bot --no-pager\nAI:      настройка Gemini ↔ Groq через Telegram → 🤖 AI\n'
