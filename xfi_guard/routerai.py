@@ -1,8 +1,7 @@
 """RouterAI adapter for XFI Guard.
 
 RouterAI exposes an OpenAI-compatible API. Free models are preferred, while
-paid models can be used only when the caller explicitly enables the paid
-fallback.
+paid models can be used only as an explicit fallback policy.
 """
 from __future__ import annotations
 
@@ -12,6 +11,11 @@ import time
 from urllib import error, request
 
 BASE_URL = "https://routerai.ru/api/v1"
+_NON_CHAT_MARKERS = (
+    "image", "video", "rerank", "embedding", "moderation", "whisper",
+    "tts", "speech", "audio", "music", "lyria", "veo", "flux", "seedance",
+    "seedream", "kling", "sora", "recraft", "riverflow",
+)
 
 
 class RouterAIAdapter:
@@ -32,10 +36,7 @@ class RouterAIAdapter:
         return bool(self.api_key)
 
     def _request(self, method: str, url: str, payload: dict | None = None) -> dict:
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "XFI-Guard/1.7",
-        }
+        headers = {"Accept": "application/json", "User-Agent": "XFI-Guard/1.7"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         data = None
@@ -46,15 +47,23 @@ class RouterAIAdapter:
         with request.urlopen(req, timeout=self.timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    @staticmethod
+    def _is_chat_model(model: str) -> bool:
+        value = model.lower()
+        return not any(marker in value for marker in _NON_CHAT_MARKERS)
+
     def models(self, force: bool = False) -> list[str]:
-        """Return model IDs visible to the RouterAI account."""
+        """Return chat-capable model IDs visible to the RouterAI account."""
         if not self.configured:
             return []
         if not force and self._models_cache and time.monotonic() - self._models_cache_ts < self.cache_ttl:
             return list(self._models_cache)
         try:
             data = self._request("GET", f"{BASE_URL}/models")
-            result = [str(item.get("id")) for item in data.get("data", []) if item.get("id")]
+            result = [
+                str(item.get("id")) for item in data.get("data", [])
+                if item.get("id") and self._is_chat_model(str(item.get("id")))
+            ]
             self._models_cache = list(dict.fromkeys(result))
             self._models_cache_ts = time.monotonic()
             return list(self._models_cache)
@@ -63,13 +72,13 @@ class RouterAIAdapter:
             return list(self._models_cache)
 
     def free_models(self, candidates: list[str] | None = None, force: bool = False) -> list[str]:
-        """Return only models with an explicitly zero-cost endpoint."""
+        """Return only chat models with an explicitly zero-cost endpoint."""
         if not self.configured:
             return []
         if not force and self._free_cache and time.monotonic() - self._free_cache_ts < self.cache_ttl:
             allowed = set(candidates or self._models_cache or self.models())
             return [m for m in self._free_cache if m in allowed]
-        candidates = candidates or self.models(force=force)
+        candidates = [m for m in (candidates or self.models(force=force)) if self._is_chat_model(m)]
         result: list[str] = []
         for model in candidates:
             if "/" not in model:
@@ -91,15 +100,15 @@ class RouterAIAdapter:
         self._free_cache_ts = time.monotonic()
         return list(self._free_cache)
 
-    def ordered_models(self, candidates: list[str] | None = None, allow_paid: bool = False) -> list[str]:
-        """Return free chat models first, then paid models when explicitly allowed."""
+    def ordered_models(self, candidates: list[str] | None = None, allow_paid: bool = True) -> list[str]:
+        """Return free chat models first and paid chat models after them."""
         all_models = list(dict.fromkeys(candidates or self.models()))
+        all_models = [m for m in all_models if self._is_chat_model(m)]
         free = self.free_models(all_models)
         if not allow_paid:
             return free
         free_set = set(free)
-        paid = [m for m in all_models if m not in free_set]
-        return free + paid
+        return free + [m for m in all_models if m not in free_set]
 
     @staticmethod
     def _zero(value) -> bool:
@@ -113,8 +122,7 @@ class RouterAIAdapter:
             return False, "API key not configured"
         try:
             result = self._request(
-                "POST",
-                f"{BASE_URL}/chat/completions",
+                "POST", f"{BASE_URL}/chat/completions",
                 {
                     "model": model,
                     "messages": [{"role": "user", "content": "Ответь OK"}],
@@ -135,37 +143,48 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str) -> str | None:
-        """Analyze with a caller-selected model; paid usage is controlled upstream."""
+        """Try free RouterAI chat models first, then paid models as fallback."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
-        try:
-            result = self._request(
-                "POST",
-                f"{BASE_URL}/chat/completions",
-                {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 500,
-                    "provider": {"allow_fallbacks": False},
-                },
-            )
-            content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
-            if not content:
-                self.last_error = "empty response"
-                return None
-            return str(content)
-        except error.HTTPError as exc:
+
+        candidates = self.ordered_models(allow_paid=True)
+        if model and model in candidates:
+            candidates.remove(model)
+            free = set(self.free_models(candidates))
+            candidates.insert(0, model) if model in free else candidates.append(model)
+        if not candidates:
+            candidates = [model] if model else []
+
+        errors: list[str] = []
+        for candidate in candidates[:12]:
             try:
-                detail = exc.read().decode("utf-8", errors="replace")[:800]
-            except Exception:
-                detail = ""
-            self.last_error = f"HTTP {exc.code}: {detail}"
-            return None
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return None
+                result = self._request(
+                    "POST", f"{BASE_URL}/chat/completions",
+                    {
+                        "model": candidate,
+                        "messages": [
+                            {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0,
+                        "max_tokens": 500,
+                        "provider": {"allow_fallbacks": False},
+                    },
+                )
+                content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
+                if content:
+                    self.last_error = ""
+                    return str(content)
+                errors.append(f"{candidate}: empty response")
+            except error.HTTPError as exc:
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")[:500]
+                except Exception:
+                    detail = ""
+                errors.append(f"{candidate}: HTTP {exc.code}: {detail}")
+            except Exception as exc:
+                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+
+        self.last_error = "; ".join(errors[-4:]) or "no RouterAI chat models available"
+        return None
