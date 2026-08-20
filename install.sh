@@ -4,11 +4,38 @@ REPO="${XFI_GUARD_REPO:-https://github.com/deilja/XFI_Guard.git}"
 INSTALL_DIR="${XFI_GUARD_DIR:-/opt/xfi-guard}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 TTY=/dev/tty
+PRESERVE_DIR=""
+PRESERVE_ACTIVE=0
 log(){ printf '\n[XFI Guard] %s\n' "$*"; }
 die(){ printf '\n[XFI Guard] ERROR: %s\n' "$*" >&2; exit 1; }
 ask(){ local __v="$1"; shift; local __x=""; if [[ -r "$TTY" ]]; then IFS= read -r -p "$*" __x < "$TTY" || true; else IFS= read -r -p "$*" __x || true; fi; printf -v "$__v" '%s' "$__x"; }
 [[ $(id -u) -eq 0 ]] || die "Запустите: sudo bash install.sh"
 command -v apt-get >/dev/null || die "Поддерживаются Ubuntu/Debian"
+
+# Никогда не теряем конфигурацию при повторном запуске install.sh.
+# Старые секреты сохраняются во временный каталог и возвращаются после установки.
+if [[ -f /etc/xfi-guard/bot.env || -f /var/lib/xfi-guard/ai.json || -f "$INSTALL_DIR/.env" || -f "$INSTALL_DIR/.env.local" ]]; then
+  PRESERVE_DIR="$(mktemp -d /tmp/xfi-guard-preserve.XXXXXX)"
+  PRESERVE_ACTIVE=1
+  mkdir -p "$PRESERVE_DIR/etc/xfi-guard" "$PRESERVE_DIR/var/lib/xfi-guard" "$PRESERVE_DIR/opt-xfi-guard"
+  [[ -f /etc/xfi-guard/bot.env ]] && cp -a /etc/xfi-guard/bot.env "$PRESERVE_DIR/etc/xfi-guard/bot.env"
+  [[ -f /var/lib/xfi-guard/ai.json ]] && cp -a /var/lib/xfi-guard/ai.json "$PRESERVE_DIR/var/lib/xfi-guard/ai.json"
+  [[ -f "$INSTALL_DIR/.env" ]] && cp -a "$INSTALL_DIR/.env" "$PRESERVE_DIR/opt-xfi-guard/.env"
+  [[ -f "$INSTALL_DIR/.env.local" ]] && cp -a "$INSTALL_DIR/.env.local" "$PRESERVE_DIR/opt-xfi-guard/.env.local"
+  log "Обнаружена существующая конфигурация: секреты будут сохранены"
+fi
+restore_preserved(){
+  [[ "$PRESERVE_ACTIVE" -eq 1 ]] || return 0
+  [[ -f "$PRESERVE_DIR/etc/xfi-guard/bot.env" ]] && install -D -m 600 "$PRESERVE_DIR/etc/xfi-guard/bot.env" /etc/xfi-guard/bot.env
+  [[ -f "$PRESERVE_DIR/var/lib/xfi-guard/ai.json" ]] && install -D -m 600 "$PRESERVE_DIR/var/lib/xfi-guard/ai.json" /var/lib/xfi-guard/ai.json
+  [[ -f "$PRESERVE_DIR/opt-xfi-guard/.env" ]] && install -D -m 600 "$PRESERVE_DIR/opt-xfi-guard/.env" "$INSTALL_DIR/.env"
+  [[ -f "$PRESERVE_DIR/opt-xfi-guard/.env.local" ]] && install -D -m 600 "$PRESERVE_DIR/opt-xfi-guard/.env.local" "$INSTALL_DIR/.env.local"
+  rm -rf "$PRESERVE_DIR"
+  PRESERVE_ACTIVE=0
+  log "Существующая конфигурация восстановлена"
+}
+trap 'status=$?; restore_preserved; exit $status' EXIT
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y git ca-certificates python3 python3-venv python3-pip nginx openssl certbot python3-certbot-nginx
@@ -52,7 +79,6 @@ XFI_GUARD_WEBHOOK_HOST=127.0.0.1
 XFI_GUARD_WEBHOOK_PORT=8080
 EOF
     chmod 600 /etc/xfi-guard/bot.env
-
     log "Настройка Nginx для $WEBHOOK_DOMAIN"
     cat >/etc/nginx/sites-available/xfi-guard-webhook.conf <<EOF
 server {
@@ -69,12 +95,10 @@ EOF
     nginx -t
     systemctl enable --now nginx
     systemctl reload nginx
-
     if [[ ! -f "/etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem" ]]; then
       log "Получение SSL-сертификата Let's Encrypt"
       certbot certonly --webroot -w /var/www/html -d "$WEBHOOK_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || die "Не удалось получить SSL для $WEBHOOK_DOMAIN. Проверьте DNS A/AAAA и доступность TCP/80."
     fi
-
     cat >/etc/nginx/sites-available/xfi-guard-webhook.conf <<EOF
 server {
     listen 80;
@@ -83,15 +107,12 @@ server {
     location /.well-known/acme-challenge/ { root /var/www/html; }
     location / { return 301 https://\$host\$request_uri; }
 }
-
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
     server_name $WEBHOOK_DOMAIN;
-
     ssl_certificate /etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$WEBHOOK_DOMAIN/privkey.pem;
-
     location = /xfi-guard/webhook {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
@@ -100,7 +121,6 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
-
     location / { return 404; }
 }
 EOF
@@ -113,7 +133,6 @@ EOF
     chmod 600 /etc/xfi-guard/bot.env
     log "Домен не указан: бот будет работать через polling."
   fi
-
   if [[ -f systemd/xfi-guard-bot.service ]]; then
     install -m 0644 systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
     sed -i "s#^ExecStart=.*#ExecStart=$INSTALL_DIR/.venv/bin/python -m xfi_guard.bot#" /etc/systemd/system/xfi-guard-bot.service
