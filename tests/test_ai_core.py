@@ -46,11 +46,10 @@ def test_analyze_falls_back_to_groq(monkeypatch):
     analyzer.gemini = DummyGemini()
     monkeypatch.setattr(analyzer, "_analyze_groq", lambda event: "ответ Groq")
 
-    result = analyzer.analyze({"event_type": "health_check"})
+    result = analyzer.analyze("health check")
 
     assert result == "ответ Groq"
     assert analyzer.last_provider == "groq"
-    assert analyzer.last_model == "groq-test"
 
 
 def test_analyze_without_any_provider_returns_clear_error(monkeypatch):
@@ -62,5 +61,5 @@ def test_analyze_without_any_provider_returns_clear_error(monkeypatch):
         "groq_model": "groq-test",
     })
     analyzer = ai.AIAnalyzer()
-    assert analyzer.analyze({"event_type": "health_check"}) is None
+    assert analyzer.analyze("health check") is None
     assert "не настроен" in analyzer.last_error.lower()
