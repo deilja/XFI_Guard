@@ -24,29 +24,19 @@ def available() -> bool:
     return code == 0
 
 
-def jail_active() -> bool:
+def jail_active(jail: str = JAIL) -> bool:
     if not available():
         return False
-    code, _, _ = _run(["fail2ban-client", "status", JAIL])
+    code, _, _ = _run(["fail2ban-client", "status", jail])
     return code == 0
 
 
 def ban(ip: str, seconds: int = BAN_SECONDS) -> tuple[bool, str]:
-    """Ban an IP through the dedicated XFI Guard Fail2Ban jail.
-
-    The jail configuration owns the effective bantime.  We deliberately use
-    ``banip <IP>`` rather than passing a third argument to fail2ban-client,
-    because the latter is not a portable bantime override across Fail2Ban
-    versions.  The shipped jail is pinned to BAN_SECONDS (7 days).
-    """
     ip = _valid_ip(ip)
     requested = max(60, int(seconds))
     if not jail_active():
         return False, f"Fail2Ban jail '{JAIL}' is not active"
-
-    code, stdout, stderr = _run(
-        ["fail2ban-client", "set", JAIL, "banip", ip]
-    )
+    code, stdout, stderr = _run(["fail2ban-client", "set", JAIL, "banip", ip])
     output = (stdout or stderr).strip()
     if code == 0:
         _write_sync_log(ip)
@@ -68,16 +58,16 @@ def unban(ip: str) -> tuple[bool, str]:
     return False, f"Fail2Ban не смог снять блокировку {ip}: {output[-500:]}"
 
 
-def banned_ips() -> list[str]:
-    if not jail_active():
+def banned_ips(jail: str = JAIL) -> list[str]:
+    if not jail_active(jail):
         return []
-    code, stdout, _ = _run(["fail2ban-client", "status", JAIL])
+    code, stdout, _ = _run(["fail2ban-client", "status", jail])
     if code != 0:
         return []
     match = re.search(r"Banned IP list:\s*(.*)", stdout or "")
     if not match:
         return []
-    result: list[str] = []
+    result = []
     for value in match.group(1).split():
         try:
             ip = _valid_ip(value)
@@ -85,6 +75,25 @@ def banned_ips() -> list[str]:
             continue
         if ip not in result:
             result.append(ip)
+    return result
+
+
+def all_banned() -> dict[str, list[str]]:
+    """Return active bans from every running Fail2Ban jail."""
+    if not available():
+        return {}
+    code, stdout, _ = _run(["fail2ban-client", "status"])
+    if code != 0:
+        return {}
+    match = re.search(r"Jail list:\s*(.*)", stdout or "")
+    if not match:
+        return {}
+    result = {}
+    for jail in (x.strip() for x in match.group(1).split(",")):
+        if jail:
+            ips = banned_ips(jail)
+            if ips:
+                result[jail] = ips
     return result
 
 
