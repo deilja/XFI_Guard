@@ -52,7 +52,12 @@ def _fetch(provider: str, key: str) -> list[dict]:
     if provider == "routerai":
         adapter = RouterAIAdapter(key, timeout=15)
         all_models = adapter.models(force=True)
+        if not all_models:
+            raise RuntimeError(adapter.last_error or "API не вернуло моделей")
         free = set(adapter.free_models(all_models, force=True))
+        # A free-price catalogue is preferred, but zero detected free models is
+        # not an API failure. RouterAI may expose only paid endpoints for the
+        # current account; paid fallback must remain selectable.
         return [{"id": model, "free": model in free} for model in all_models]
     raise ValueError(f"Неизвестный провайдер: {provider}")
 
@@ -100,15 +105,16 @@ def install_ai_model_manager(dp: Dispatcher) -> None:
             models = await asyncio.to_thread(_fetch, provider, _key(cfg, provider))
             if not models:
                 raise RuntimeError("API не вернуло моделей")
-            # Telegram keyboards are finite, but there is deliberately no backend
-            # model limit. If RouterAI exposes more models they all remain in the
-            # API catalogue and can be selected programmatically.
             visible = models[:100]
             rows = [[f"Выбрать {provider}: {item['id']}"] for item in visible]
             rows += [["🧩 API модели"], ["⬅️ AI"]]
             lines = [f"{'🆓' if item['free'] else '💳'} {item['id']}" + (" ✅" if item['id'] == _current(cfg, provider) else "") for item in visible]
+            free_count = sum(1 for item in models if item["free"])
+            paid_count = len(models) - free_count
             suffix = "" if len(visible) == len(models) else f"\n\nПоказано {len(visible)} из {len(models)}; полный каталог доступен через API."
-            await message.answer(f"📡 {provider.upper()} API\n\n" + "\n".join(lines) + suffix + "\n\nНажмите модель для выбора.", reply_markup=_kb(rows))
+            if provider == "routerai" and free_count == 0:
+                suffix += "\n\nℹ️ Бесплатные модели сейчас не определены по тарифам API. Платные модели доступны как fallback."
+            await message.answer(f"📡 {provider.upper()} API\n\n" + "\n".join(lines) + f"\n\n🆓 Бесплатных: {free_count}  💳 Платных: {paid_count}" + suffix + "\n\nНажмите модель для выбора.", reply_markup=_kb(rows))
         except error.HTTPError as exc:
             body = exc.read().decode(errors="replace")[:500]
             await message.answer(f"❌ {provider.upper()} API: HTTP {exc.code}\n{body}", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]]))
