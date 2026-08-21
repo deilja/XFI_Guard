@@ -72,7 +72,7 @@ class RouterAIAdapter:
 
     @classmethod
     def _endpoint_items(cls, data: dict) -> list[dict]:
-        """Accept both known RouterAI endpoint response shapes."""
+        """Accept all documented RouterAI endpoint response shapes."""
         if not isinstance(data, dict):
             return []
         payload = data.get("data")
@@ -80,8 +80,9 @@ class RouterAIAdapter:
             endpoints = payload.get("endpoints")
             if isinstance(endpoints, list):
                 return [x for x in endpoints if isinstance(x, dict)]
-            if isinstance(payload.get("data"), list):
-                return [x for x in payload["data"] if isinstance(x, dict)]
+            nested = payload.get("data")
+            if isinstance(nested, list):
+                return [x for x in nested if isinstance(x, dict)]
         if isinstance(payload, list):
             return [x for x in payload if isinstance(x, dict)]
         endpoints = data.get("endpoints")
@@ -90,19 +91,48 @@ class RouterAIAdapter:
         return []
 
     @classmethod
+    def _zero(cls, value) -> bool:
+        if isinstance(value, dict):
+            value = value.get("value", value.get("amount", value.get("price")))
+        if value is None:
+            return True
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace("₽", "").replace("rub", "")
+            if normalized in {"", "0", "0.0", "0.00", "0.000000", "free", "бесплатно"}:
+                return True
+            value = normalized
+        try:
+            return float(value) == 0.0
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
     def _pricing_is_free(cls, pricing: dict | None) -> bool:
         if not isinstance(pricing, dict):
             return False
+        if pricing.get("free") is True or pricing.get("is_free") is True:
+            return True
         prompt = pricing.get("prompt", pricing.get("input"))
         completion = pricing.get("completion", pricing.get("output"))
         return cls._zero(prompt) and cls._zero(completion)
 
-    def free_models(self, candidates: list[str] | None = None, force: bool = False) -> list[str]:
-        """Discover every currently free model from RouterAI pricing metadata.
+    @classmethod
+    def _model_is_free(cls, item: dict) -> bool:
+        if not isinstance(item, dict):
+            return False
+        for key in ("free", "is_free", "free_tier"):
+            if item.get(key) is True:
+                return True
+        return cls._pricing_is_free(item.get("pricing"))
 
-        RouterAI has returned more than one JSON shape for /endpoints, so do not
-        assume data.endpoints is always present. Model-level pricing is also
-        accepted when supplied by /models.
+    def free_models(self, candidates: list[str] | None = None, force: bool = False) -> list[str]:
+        """Discover every currently free model.
+
+        RouterAI documents model-level pricing in /models and endpoint-level
+        pricing in /models/{author}/{slug}/endpoints. Both are accepted. If
+        endpoint metadata is unavailable, the model-level metadata remains
+        authoritative. A failed endpoint lookup never turns the whole catalogue
+        into an empty list.
         """
         if not self.configured:
             return []
@@ -110,11 +140,12 @@ class RouterAIAdapter:
             allowed = set(candidates or self._models_cache or self.models())
             return [m for m in self._free_cache if m in allowed]
 
-        candidates = list(dict.fromkeys(candidates or self.models(force=force)))
+        all_models = list(dict.fromkeys(candidates or self.models(force=force)))
         result: list[str] = []
-        for model in candidates:
+        endpoint_failures = 0
+        for model in all_models:
             meta = self._models_meta_cache.get(model) or {}
-            if self._pricing_is_free(meta.get("pricing")):
+            if self._model_is_free(meta):
                 result.append(model)
                 continue
             if "/" not in model:
@@ -123,15 +154,19 @@ class RouterAIAdapter:
             try:
                 data = self._request("GET", f"{BASE_URL}/models/{author}/{slug}/endpoints")
                 endpoints = self._endpoint_items(data)
-                if any(self._pricing_is_free(endpoint.get("pricing")) for endpoint in endpoints):
+                if any(self._model_is_free(endpoint) or self._pricing_is_free(endpoint.get("pricing")) for endpoint in endpoints):
                     result.append(model)
             except error.HTTPError as exc:
+                endpoint_failures += 1
                 self.last_error = f"{model}: HTTP {exc.code}"
             except Exception as exc:
+                endpoint_failures += 1
                 self.last_error = f"{model}: {type(exc).__name__}: {exc}"
 
         self._free_cache = list(dict.fromkeys(result))
         self._free_cache_ts = time.monotonic()
+        if not self._free_cache and all_models and endpoint_failures:
+            self.last_error = f"free model metadata unavailable for {endpoint_failures}/{len(all_models)} models; paid catalogue remains available"
         return list(self._free_cache)
 
     def ordered_models(self, candidates: list[str] | None = None, allow_paid: bool = True, preferred: str | None = None) -> list[str]:
@@ -148,15 +183,6 @@ class RouterAIAdapter:
         if preferred and preferred in paid:
             paid = [m for m in paid if m != preferred] + [preferred]
         return ordered_free + paid
-
-    @staticmethod
-    def _zero(value) -> bool:
-        if isinstance(value, dict):
-            value = value.get("value", value.get("amount"))
-        try:
-            return float(value or 0) == 0.0
-        except (TypeError, ValueError):
-            return False
 
     def health(self, model: str) -> tuple[bool, str]:
         if not self.configured:
