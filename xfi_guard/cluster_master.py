@@ -8,8 +8,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .cluster import accept_event
+from .cluster_notify import notify_global_block_sync
 from .cluster_policy import evaluate
-from .threat_intel import active, report
+from .threat_intel import active
 
 NODES: dict[str, dict] = {}
 COMMANDS: dict[str, list[dict]] = {}
@@ -39,8 +40,7 @@ class Handler(BaseHTTPRequestHandler):
         expected = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "")
         if not expected:
             return True
-        got = self.headers.get("Authorization", "")
-        return got == f"Bearer {expected}"
+        return self.headers.get("Authorization", "") == f"Bearer {expected}"
 
     def do_POST(self):
         if not self._auth():
@@ -59,16 +59,29 @@ class Handler(BaseHTTPRequestHandler):
                 secret = os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
                 if not secret:
                     raise ValueError("master secret is not configured")
-                item = accept_event(payload, payload.pop("signature", ""), secret)
+                signature = str(payload.get("signature", ""))
+                signed_payload = dict(payload)
+                signed_payload.pop("signature", None)
+                item = accept_event(signed_payload, signature, secret)
+                source_node = str(signed_payload.get("node", "unknown"))
                 nodes = len(item.get("origin_nodes", []))
                 decision = evaluate(item.get("score", 0), item.get("risk", "low"), nodes, require_two_nodes=False)
+                blocked_nodes = []
+                until = None
                 if decision.allowed:
                     until = time.time() + 604800
                     with LOCK:
-                        for node in NODES:
-                            if node != payload.get("node"):
-                                COMMANDS.setdefault(node, []).append({"action":"block","ip":item["ip"],"until":until,"source_node":payload.get("node","unknown")})
-                return _json(self, 200, {"ok": True, "threat": item, "global_block": decision.allowed})
+                        for node, state in NODES.items():
+                            if node != source_node and time.time() - state["last_seen"] <= 90:
+                                COMMANDS.setdefault(node, []).append({"action":"block","ip":item["ip"],"until":until,"source_node":source_node})
+                                blocked_nodes.append(node)
+                    event = dict(item)
+                    event.update({"source_node": source_node, "until": until, "confidence": signed_payload.get("confidence", "-"), "providers": signed_payload.get("providers", "-")})
+                    try:
+                        notify_global_block_sync(event, blocked_nodes)
+                    except Exception:
+                        pass
+                return _json(self, 200, {"ok": True, "threat": item, "global_block": decision.allowed, "blocked_nodes": blocked_nodes})
             return _json(self, 404, {"error": "not found"})
         except Exception as exc:
             return _json(self, 400, {"error": str(exc)})
