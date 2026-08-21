@@ -1,12 +1,8 @@
-"""Read-only multi-VPS inventory for XFI Guard.
-
-Nodes are configured in config.toml under [[nodes]]. Authentication is delegated
-entirely to the host's SSH config/agent; no private keys or passwords are stored
-by XFI Guard.
-"""
+"""Read-only multi-VPS inventory and safe SSH host-key enrollment."""
 from __future__ import annotations
 
 import ipaddress
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -46,18 +42,67 @@ def load_nodes(path: str | Path = "config.toml") -> list[Node]:
         try:
             ipaddress.ip_address(host)
         except ValueError:
-            # DNS names are allowed; validation is performed by ssh.
             if any(c in host for c in " /\\\t\r\n"):
                 continue
         result.append(Node(name=name, host=host, user=user, port=port))
     return result
 
 
+def _ssh_base(node: Node) -> list[str]:
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", str(node.port), f"{node.user}@{node.host}"]
+
+
+def host_key_fingerprint(node: Node, timeout: int = 10) -> tuple[bool, str]:
+    """Fetch the remote ED25519 host key and return its SHA256 fingerprint.
+
+    This is deliberately a separate enrollment step. It does not disable
+    StrictHostKeyChecking for normal connections and does not modify
+    known_hosts.
+    """
+    cmd = ["ssh-keyscan", "-T", str(max(1, timeout)), "-t", "ed25519", "-p", str(node.port), node.host]
+    try:
+        p = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout + 3, check=False)
+        lines = [x.strip() for x in p.stdout.splitlines() if x.strip() and not x.startswith("#")]
+        if p.returncode != 0 or not lines:
+            return False, (p.stderr or "ssh-keyscan returned no key").strip()[:300]
+        key_line = lines[0]
+        fp = subprocess.run(["ssh-keygen", "-lf", "-", "-E", "sha256"], input=key_line + "\n", text=True, capture_output=True, timeout=5, check=False)
+        if fp.returncode != 0:
+            return False, (fp.stderr or "ssh-keygen failed").strip()[:300]
+        parts = fp.stdout.split()
+        return (True, parts[1] if len(parts) > 1 else fp.stdout.strip())
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def enroll_host_key(node: Node, timeout: int = 10) -> tuple[bool, str]:
+    """Add the currently presented ED25519 key to the user's known_hosts.
+
+    The caller must have explicitly confirmed the displayed fingerprint.
+    """
+    ssh_dir = Path(os.path.expanduser("~/.ssh"))
+    ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    known_hosts = ssh_dir / "known_hosts"
+    known_hosts.touch(mode=0o600, exist_ok=True)
+    cmd = ["ssh-keyscan", "-T", str(max(1, timeout)), "-t", "ed25519", "-p", str(node.port), node.host]
+    try:
+        p = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout + 3, check=False)
+        lines = [x for x in p.stdout.splitlines() if x and not x.startswith("#")]
+        if p.returncode != 0 or not lines:
+            return False, (p.stderr or "ssh-keyscan returned no key").strip()[:300]
+        existing = known_hosts.read_text(encoding="utf-8", errors="replace")
+        additions = [x for x in lines if x not in existing]
+        if additions:
+            with known_hosts.open("a", encoding="utf-8") as f:
+                for line in additions:
+                    f.write(line + "\n")
+        return True, str(known_hosts)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 def probe_node(node: Node, timeout: int = 8) -> dict:
-    target = f"{node.user}@{node.host}"
-    command = [
-        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-        "-p", str(node.port), target,
+    command = _ssh_base(node) + [
         "python3 -c 'import json,platform,subprocess; "
         "print(json.dumps({\"hostname\":platform.node(),"
         "\"xfi_guard\":subprocess.run([\"systemctl\",\"is-active\",\"xfi-guard.service\"],capture_output=True,text=True).stdout.strip(),"
