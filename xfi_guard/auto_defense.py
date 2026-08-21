@@ -76,6 +76,7 @@ def confirm_block(ip, actor="admin", reason="manual confirmation", metadata=None
         **(metadata or {}),
         "backend": "fail2ban",
         "bantime_seconds": BAN_SECONDS,
+        "expires_at": datetime.now(timezone.utc).timestamp() + BAN_SECONDS if ok else None,
     })
     return ok, message
 
@@ -85,6 +86,41 @@ def confirm_unblock(ip, actor="admin", reason="manual confirmation", metadata=No
     ok, message = fail2ban_unban(ip)
     _audit(ip, "unblock" if ok else "unblock_failed", actor, reason, {**(metadata or {}), "backend": "fail2ban"})
     return ok, message
+
+
+def reconcile_expired() -> list[dict]:
+    """Detect timed Fail2Ban bans that have naturally expired and audit them once."""
+    if not jail_active():
+        return []
+    state = _load()
+    history = state.setdefault("history", [])
+    active = set(banned_ips())
+    already_expired = {
+        str(item.get("ip")) for item in history
+        if item.get("action") == "expired"
+    }
+    results: list[dict] = []
+    for item in reversed(history):
+        if item.get("action") != "block":
+            continue
+        ip = str(item.get("ip") or "").strip()
+        if not ip or ip in active or ip in already_expired:
+            continue
+        metadata = item.get("metadata") or {}
+        expires_at = metadata.get("expires_at")
+        if expires_at:
+            try:
+                if datetime.now(timezone.utc).timestamp() < float(expires_at):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        _audit(ip, "expired", "xfi-guard-timer", "Срок автоматической блокировки 7 дней истёк", {
+            "backend": "fail2ban",
+            "bantime_seconds": BAN_SECONDS,
+        })
+        results.append({"ip": ip, "action": "expired"})
+        already_expired.add(ip)
+    return results
 
 
 def history(limit=50):
