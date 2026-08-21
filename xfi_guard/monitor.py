@@ -163,6 +163,12 @@ def run_forever(config: MonitorConfig) -> None:
         if events:
             defense_results = auto_blocker.evaluate(events)
             if defense_results:
+                for item in defense_results:
+                    if item.get("action") == "blocked":
+                        # Dedicated, machine-readable journal event consumed by the
+                        # xfi-guard Fail2Ban jail. Fail2Ban then enforces the same
+                        # seven-day ban and keeps its state synchronized with UFW.
+                        LOG.warning("XFI-GUARD THREAT %s", item["ip"])
                 write_snapshot(config.output_file, snapshot, events + [{"event_type": "auto_defense", **item} for item in defense_results])
                 _notify_auto_blocks(defense_results)
             else:
