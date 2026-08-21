@@ -18,7 +18,7 @@ class RouterAIAdapter:
     provider = "routerai"
 
     def __init__(self, api_key: str | None = None, timeout: float = 20.0):
-        self.api_key = api_key or os.getenv("ROUTERAI_API_KEY") or ""
+        self.api_key = (api_key or os.getenv("ROUTERAI_API_KEY") or "").strip()
         self.timeout = timeout
         self.last_error = ""
         self.last_model = ""
@@ -34,20 +34,37 @@ class RouterAIAdapter:
         return bool(self.api_key)
 
     def _request(self, method: str, url: str, payload: dict | None = None) -> dict:
-        headers = {"Accept": "application/json", "User-Agent": "XFI-Guard/1.9"}
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "XFI-Guard/1.9",
+        }
         if self.api_key:
+            # urllib sends HTTP header values using latin-1. A copied key that
+            # contains Cyrillic/non-ASCII characters therefore fails before the
+            # request reaches RouterAI. Report that configuration error clearly
+            # instead of leaking UnicodeEncodeError into the Telegram UI.
+            try:
+                self.api_key.encode("ascii")
+            except UnicodeEncodeError as exc:
+                self.last_error = "API key contains non-ASCII characters; replace it with the original RouterAI key"
+                raise RuntimeError(self.last_error) from exc
             headers["Authorization"] = f"Bearer {self.api_key}"
         data = None
         if payload is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = request.Request(url, data=data, headers=headers, method=method)
-        with request.urlopen(req, timeout=self.timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            req = request.Request(url, data=data, headers=headers, method=method)
+            with request.urlopen(req, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except UnicodeEncodeError as exc:
+            self.last_error = "RouterAI HTTP header contains non-ASCII data; check ROUTERAI_API_KEY"
+            raise RuntimeError(self.last_error) from exc
 
     def models(self, force: bool = False) -> list[str]:
         """Return every model exposed by RouterAI; never truncate the catalogue."""
         if not self.configured:
+            self.last_error = "API key not configured"
             return []
         if not force and self._models_cache and time.monotonic() - self._models_cache_ts < self.cache_ttl:
             return list(self._models_cache)
@@ -65,6 +82,7 @@ class RouterAIAdapter:
             self._models_cache = list(dict.fromkeys(result))
             self._models_meta_cache = meta
             self._models_cache_ts = time.monotonic()
+            self.last_error = ""
             return list(self._models_cache)
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
@@ -126,15 +144,9 @@ class RouterAIAdapter:
         return cls._pricing_is_free(item.get("pricing"))
 
     def free_models(self, candidates: list[str] | None = None, force: bool = False) -> list[str]:
-        """Discover every currently free model.
-
-        RouterAI documents model-level pricing in /models and endpoint-level
-        pricing in /models/{author}/{slug}/endpoints. Both are accepted. If
-        endpoint metadata is unavailable, the model-level metadata remains
-        authoritative. A failed endpoint lookup never turns the whole catalogue
-        into an empty list.
-        """
+        """Discover every currently free model without failing the whole catalogue."""
         if not self.configured:
+            self.last_error = "API key not configured"
             return []
         if not force and self._free_cache and time.monotonic() - self._free_cache_ts < self.cache_ttl:
             allowed = set(candidates or self._models_cache or self.models())
@@ -156,9 +168,6 @@ class RouterAIAdapter:
                 endpoints = self._endpoint_items(data)
                 if any(self._model_is_free(endpoint) or self._pricing_is_free(endpoint.get("pricing")) for endpoint in endpoints):
                     result.append(model)
-            except error.HTTPError as exc:
-                endpoint_failures += 1
-                self.last_error = f"{model}: HTTP {exc.code}"
             except Exception as exc:
                 endpoint_failures += 1
                 self.last_error = f"{model}: {type(exc).__name__}: {exc}"
