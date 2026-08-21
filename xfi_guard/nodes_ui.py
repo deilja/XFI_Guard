@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
-from .nodes import collect_nodes
+from .nodes import collect_nodes, enroll_host_key, host_key_fingerprint, Node
 from .nodes_manager import add_node, list_configured_nodes, remove_node
 from .node_bootstrap import bootstrap
 
@@ -17,6 +17,7 @@ class NodeForm(StatesGroup):
     host = State()
     user = State()
     port = State()
+    hostkey_confirm = State()
 
 
 def _menu() -> ReplyKeyboardMarkup:
@@ -26,6 +27,13 @@ def _menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🔌 Подключить XFI Guard")],
             [KeyboardButton(text="🔄 Проверить VPS"), KeyboardButton(text="⬅️ Главное меню")],
         ], resize_keyboard=True, is_persistent=True,
+    )
+
+
+def _hostkey_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="✅ Доверять ключу")], [KeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True, is_persistent=True,
     )
 
 
@@ -81,14 +89,37 @@ def install_node_handlers(dp, admin_ids: set[int]):
             else:
                 await message.answer(f"🔴 {name}\n\nПодключение не выполнено.\n\n{output[-1800:]}")
 
-    # Must be available while any NodeForm state is active. Previously the
-    # state handlers consumed this button as ordinary input and port parsing
-    # attempted int("⬅️ Главное меню").
     @dp.message(F.text == "⬅️ Главное меню")
     async def cancel_node_form(message, state: FSMContext):
         if not is_admin(message): return
         await state.clear()
         await message.answer("🏠 Главное меню", reply_markup=_menu())
+
+    @dp.message(F.text == "❌ Отмена", NodeForm.hostkey_confirm)
+    async def cancel_hostkey(message, state: FSMContext):
+        if not is_admin(message): return
+        await state.clear()
+        await message.answer("❌ Добавление VPS отменено.", reply_markup=_menu())
+
+    @dp.message(F.text == "✅ Доверять ключу", NodeForm.hostkey_confirm)
+    async def confirm_hostkey(message, state: FSMContext):
+        if not is_admin(message): return
+        data = await state.get_data()
+        node = Node(name=data["name"], host=data["host"], user=data.get("user", "root"), port=int(data.get("port", 22)))
+        ok, result = await asyncio.to_thread(enroll_host_key, node)
+        if not ok:
+            await state.clear()
+            await message.answer(f"❌ Не удалось добавить ключ в known_hosts:\n{result}", reply_markup=_menu())
+            return
+        await state.clear()
+        await message.answer(
+            f"✅ SSH host key добавлен в known_hosts.\n\n"
+            f"Узел: {node.name}\n"
+            f"SSH: {node.user}@{node.host}:{node.port}\n\n"
+            f"Теперь можно нажать «🔌 Подключить XFI Guard».\n"
+            f"Ключи и пароли XFI Guard не хранит.",
+            reply_markup=_menu(),
+        )
 
     @dp.message(NodeForm.name)
     async def node_name(message, state: FSMContext):
@@ -144,17 +175,24 @@ def install_node_handlers(dp, admin_ids: set[int]):
             await message.answer("❌ SSH порт должен быть в диапазоне 1..65535. Введите ещё раз:")
             return
         data = await state.get_data()
+        node = Node(name=data["name"], host=data["host"], user=data.get("user", "root"), port=port)
         try:
-            await asyncio.to_thread(add_node, data["name"], data["host"], data.get("user", "root"), port)
-            await state.clear()
-            await message.answer(f"✅ VPS добавлен\n\n{data['name']} — {data['user']}@{data['host']}:{port}\n\nИспользуйте «🔌 Подключить XFI Guard» для настройки узла.", reply_markup=_menu())
-            nodes = await asyncio.to_thread(collect_nodes)
-            current = next((x for x in nodes if x.get("name") == data["name"]), None)
-            if current and current.get("status") == "online":
-                await message.answer(f"🟢 SSH: OK\nXFI Guard: {current.get('xfi_guard','—')}\nFail2Ban: {current.get('fail2ban','—')}")
-            else:
-                err = current.get("error", "SSH недоступен") if current else "узел не найден"
-                await message.answer(f"🟡 Узел сохранён, но проверка не прошла:\n{err}")
+            ok, fingerprint = await asyncio.to_thread(host_key_fingerprint, node)
+            if not ok:
+                await state.clear()
+                await message.answer(f"🟡 VPS не проверен\n\nSSH host key не получен:\n{fingerprint}", reply_markup=_menu())
+                return
+            await state.update_data(port=port, fingerprint=fingerprint)
+            await state.set_state(NodeForm.hostkey_confirm)
+            await message.answer(
+                f"🔐 Проверка SSH host key\n\n"
+                f"VPS: {node.host}:{port}\n"
+                f"Алгоритм: ED25519\n"
+                f"Fingerprint: {fingerprint}\n\n"
+                f"Проверьте fingerprint на самом VPS (например, через ssh-keygen).\n"
+                f"Только после проверки подтвердите доверие.",
+                reply_markup=_hostkey_menu(),
+            )
         except Exception as exc:
             await state.clear(); await message.answer(f"❌ VPS не добавлен: {type(exc).__name__}: {exc}", reply_markup=_menu())
 
