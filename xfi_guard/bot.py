@@ -21,6 +21,7 @@ from .rate_limit import RateLimitMiddleware
 from .security import collect_security_checks
 from .vpn import collect_vpn_checks
 from .nodes import collect_nodes
+from .nodes_ui import install_node_handlers
 
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
@@ -38,7 +39,7 @@ def blocked_view():
 
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
-    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp)
+    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
@@ -96,9 +97,6 @@ def build_dispatcher():
         for x in data.get("ips",[])[:15]:
             state="🔒" if x.get("blocked") else "🚨"; text.append(f"{state} {x.get('ip','-')} — {x.get('risk','unknown')} ({x.get('risk_score',0)}/100), событий: {x.get('events',0)}")
         await message.answer("\n".join(text)[:3900],reply_markup=main_kb())
-    @dp.message(F.text=="🖥 VPS узлы")
-    async def vps_button(message):
-        if admin(message): await message.answer(await vps_view(),reply_markup=main_kb())
     @dp.message(F.text=="🧠 Security Brain")
     async def brain_button(message):
         if not admin(message): return
