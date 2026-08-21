@@ -53,26 +53,32 @@ def write_snapshot(path: str, snapshot: list[dict], events: list[dict] | None = 
 
 
 def _notify_auto_blocks(results: list[dict]) -> None:
-    for item in results:
-        if item.get("action") == "blocked":
-            notify(
-                "🚨 XFI Guard — АВТОБЛОКИРОВКА\n\n"
-                f"IP: {item['ip']}\n"
-                f"Причина: SSH brute-force\n"
-                f"Попыток: {item['attempts']}\n"
-                f"Уровень: {str(item['risk']).upper()}\n"
-                f"Режим AI: {item.get('analysis_mode', 'unknown')}\n"
-                f"Уверенность AI: {item['confidence']:.0%}\n"
-                "Срок блокировки: 7 дней\n"
-                "Backend: Fail2Ban + UFW\n\n"
-                f"{item.get('message', 'IP автоматически заблокирован Fail2Ban.')}"
+    blocked = [item for item in results if item.get("action") == "blocked"]
+    failed = [item for item in results if item.get("action") == "block_failed"]
+    if blocked:
+        lines = [
+            "🚨 XFI Guard — АВТОМАТИЧЕСКАЯ ЗАЩИТА",
+            "",
+            f"Заблокировано IP: {len(blocked)}",
+            "Срок: 7 дней",
+            "Backend: Fail2Ban + UFW",
+            "",
+            "IP:",
+        ]
+        for item in blocked[:30]:
+            lines.append(
+                f"• {item['ip']} — {item['attempts']} попыток — "
+                f"{str(item['risk']).upper()} — AI {item['confidence']:.0%} — "
+                f"{item.get('analysis_mode', 'unknown')}"
             )
-        elif item.get("action") == "block_failed":
-            notify(
-                "⚠️ XFI Guard — автоматическая блокировка не выполнена\n\n"
-                f"IP: {item['ip']}\n"
-                f"Причина: {item.get('message', 'ошибка Fail2Ban')}"
-            )
+        if len(blocked) > 30:
+            lines.append(f"… ещё {len(blocked) - 30} IP")
+        notify("\n".join(lines)[:3900])
+    if failed:
+        lines = ["⚠️ XFI Guard — блокировка не выполнена", ""]
+        for item in failed[:20]:
+            lines.append(f"• {item['ip']} — {item.get('message', 'ошибка Fail2Ban/UFW')}")
+        notify("\n".join(lines)[:3900])
 
 
 def _notify_ai_consensus(event: dict, result: dict) -> None:
