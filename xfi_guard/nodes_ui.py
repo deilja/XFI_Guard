@@ -111,13 +111,19 @@ def install_node_handlers(dp, admin_ids: set[int]):
             await state.clear()
             await message.answer(f"❌ Не удалось добавить ключ в known_hosts:\n{result}", reply_markup=_menu())
             return
+        try:
+            await asyncio.to_thread(add_node, node.name, node.host, node.user, node.port)
+        except Exception as exc:
+            await state.clear()
+            await message.answer(f"❌ Host key добавлен, но VPS не сохранён:\n{type(exc).__name__}: {exc}", reply_markup=_menu())
+            return
         await state.clear()
         await message.answer(
-            f"✅ SSH host key добавлен в known_hosts.\n\n"
+            f"✅ VPS добавлен и SSH host key подтверждён.\n\n"
             f"Узел: {node.name}\n"
             f"SSH: {node.user}@{node.host}:{node.port}\n\n"
             f"Теперь можно нажать «🔌 Подключить XFI Guard».\n"
-            f"Ключи и пароли XFI Guard не хранит.",
+            f"Пароли и приватные ключи XFI Guard не хранит.",
             reply_markup=_menu(),
         )
 
@@ -189,7 +195,7 @@ def install_node_handlers(dp, admin_ids: set[int]):
                 f"VPS: {node.host}:{port}\n"
                 f"Алгоритм: ED25519\n"
                 f"Fingerprint: {fingerprint}\n\n"
-                f"Проверьте fingerprint на самом VPS (например, через ssh-keygen).\n"
+                f"Проверьте fingerprint на самом VPS.\n"
                 f"Только после проверки подтвердите доверие.",
                 reply_markup=_hostkey_menu(),
             )
