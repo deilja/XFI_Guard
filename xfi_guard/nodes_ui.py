@@ -32,9 +32,9 @@ def install_node_handlers(dp,admin_ids:set[int]):
         ns=[str(x.get("name")) for x in list_configured_nodes()]
         if not ns: return await m.answer("Нет настроенных VPS.",reply_markup=_menu())
         await state.clear(); await state.update_data(remove_mode=True); await state.set_state(NodeForm.name); await m.answer("Введите имя VPS для удаления:\n\n"+"\n".join(f"• {x}" for x in ns))
-    @dp.message(F.text=="⬅️ Главное меню")
-    async def cancel(m,state:FSMContext):
-        if ok(m): await state.clear(); await m.answer("🏠 Главное меню",reply_markup=_menu())
+    # Do not register a local "⬅️ Главное меню" handler here.
+    # The global bot.py handler must own this button so it returns to main_kb(),
+    # rather than reopening the VPS keyboard.
     @dp.message(NodeForm.name)
     async def node_name(m,state:FSMContext):
         if not ok(m): return
