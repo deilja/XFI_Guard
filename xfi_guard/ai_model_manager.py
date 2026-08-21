@@ -37,7 +37,7 @@ def _fetch(provider: str, key: str) -> list[dict]:
         data = _request_json("https://generativelanguage.googleapis.com/v1beta/models", {"x-goog-api-key": key})
         return sorted(({"id": str(x.get("name", "")).removeprefix("models/"), "free": True} for x in data.get("models", []) if "generateContent" in (x.get("supportedGenerationMethods", []) or []) and x.get("name")), key=lambda x: x["id"])
     if provider == "groq":
-        data = _request_json("https://api.groq.com/openai/v1/models", {"Authorization": f"Bearer {key}", "Accept": "application/json", "User-Agent": "XFI-Guard/1.4"})
+        data = _request_json("https://api.groq.com/openai/v1/models", {"Authorization": f"Bearer {key}", "Accept": "application/json", "User-Agent": "XFI-Guard/1.9"})
         return sorted(({"id": str(x.get("id")), "free": True} for x in data.get("data", []) if x.get("id")), key=lambda x: x["id"])
     if provider == "openrouter":
         data = _request_json("https://openrouter.ai/api/v1/models", {"Authorization": f"Bearer {key}", "HTTP-Referer": "https://github.com/deilja/XFI_Guard", "X-Title": "XFI Guard"})
@@ -51,8 +51,9 @@ def _fetch(provider: str, key: str) -> list[dict]:
         return sorted(result, key=lambda x: x["id"])
     if provider == "routerai":
         adapter = RouterAIAdapter(key, timeout=15)
-        models = adapter.free_models()
-        return sorted(({"id": model, "free": True} for model in models), key=lambda x: x["id"])
+        all_models = adapter.models(force=True)
+        free = set(adapter.free_models(all_models, force=True))
+        return [{"id": model, "free": model in free} for model in all_models]
     raise ValueError(f"Неизвестный провайдер: {provider}")
 
 
@@ -64,13 +65,13 @@ def _current(cfg: dict, provider: str) -> str:
     return str(cfg.get(f"{provider}_model", ""))
 
 
-def _save_model(provider: str, model: str) -> None:
+def _save_model(provider: str, model: str, free: bool = True) -> None:
     cfg = load(); cfg[f"{provider}_model"] = model
     if provider == "openrouter": cfg["openrouter_models"] = (model,)
     if provider == "routerai":
         cfg["routerai_models"] = (model,)
         cfg["routerai_enabled"] = True
-        cfg["routerai_allow_paid"] = False
+        cfg["routerai_allow_paid"] = True
     save(cfg)
 
 
@@ -83,12 +84,12 @@ def install_ai_model_manager(dp: Dispatcher) -> None:
         if not _admin(message): return
         cfg = load()
         await message.answer(
-            "🧩 Выбор бесплатных моделей через API\n\n"
+            "🧩 Выбор моделей через API\n\n"
             f"Gemini: {cfg.get('gemini_model', '-')}\n"
             f"Groq: {cfg.get('groq_model', '-')}\n"
             f"OpenRouter: {cfg.get('openrouter_model', 'openrouter/free')}\n"
             f"RouterAI: {cfg.get('routerai_model', '-') or '-'}\n\n"
-            "Выберите провайдера:",
+            "RouterAI: бесплатные модели имеют приоритет, платные доступны как fallback.\n\nВыберите провайдера:",
             reply_markup=_kb([["📡 Gemini API", "📡 Groq API"], ["📡 OpenRouter API", "📡 RouterAI API"], ["🆓 OpenRouter Free"], ["⬅️ AI"]]),
         )
 
@@ -98,11 +99,16 @@ def install_ai_model_manager(dp: Dispatcher) -> None:
         try:
             models = await asyncio.to_thread(_fetch, provider, _key(cfg, provider))
             if not models:
-                raise RuntimeError("API не вернуло бесплатных моделей")
-            rows = [[f"Выбрать {provider}: {item['id']}"] for item in models[:40]]
+                raise RuntimeError("API не вернуло моделей")
+            # Telegram keyboards are finite, but there is deliberately no backend
+            # model limit. If RouterAI exposes more models they all remain in the
+            # API catalogue and can be selected programmatically.
+            visible = models[:100]
+            rows = [[f"Выбрать {provider}: {item['id']}"] for item in visible]
             rows += [["🧩 API модели"], ["⬅️ AI"]]
-            lines = [f"🆓 {item['id']}" + (" ✅" if item['id'] == _current(cfg, provider) else "") for item in models[:40]]
-            await message.answer(f"📡 {provider.upper()} API\n\n" + "\n".join(lines) + "\n\nНажмите модель для выбора.", reply_markup=_kb(rows))
+            lines = [f"{'🆓' if item['free'] else '💳'} {item['id']}" + (" ✅" if item['id'] == _current(cfg, provider) else "") for item in visible]
+            suffix = "" if len(visible) == len(models) else f"\n\nПоказано {len(visible)} из {len(models)}; полный каталог доступен через API."
+            await message.answer(f"📡 {provider.upper()} API\n\n" + "\n".join(lines) + suffix + "\n\nНажмите модель для выбора.", reply_markup=_kb(rows))
         except error.HTTPError as exc:
             body = exc.read().decode(errors="replace")[:500]
             await message.answer(f"❌ {provider.upper()} API: HTTP {exc.code}\n{body}", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]]))
@@ -127,9 +133,11 @@ def install_ai_model_manager(dp: Dispatcher) -> None:
         cfg = load()
         try:
             models = await asyncio.to_thread(_fetch, provider, _key(cfg, provider))
-            if not any(x["id"] == model for x in models):
-                await message.answer("❌ Модель не является бесплатной или больше недоступна через API.", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]])); return
-            _save_model(provider, model)
-            await message.answer(f"✅ {provider.upper()}\n\nМодель: {model}\nТип: 🆓\n\nБесплатная модель проверена через API и сохранена.", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]]))
+            selected = next((x for x in models if x["id"] == model), None)
+            if selected is None:
+                await message.answer("❌ Модель больше недоступна через API.", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]])); return
+            _save_model(provider, model, bool(selected["free"]))
+            kind = "🆓 Бесплатная" if selected["free"] else "💳 Платная fallback"
+            await message.answer(f"✅ {provider.upper()}\n\nМодель: {model}\nТип: {kind}\n\nМодель проверена через API и сохранена. RouterAI при анализе сначала использует бесплатные модели, затем платные fallback.", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]]))
         except Exception as exc:
             await message.answer(f"❌ Не удалось проверить модель: {type(exc).__name__}: {exc}", reply_markup=_kb([["🧩 API модели"], ["⬅️ AI"]]))
