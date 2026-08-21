@@ -36,11 +36,14 @@ def bootstrap_with_password(host: str, user: str, port: int, password: str, time
     env = os.environ.copy()
     env["SSHPASS"] = password
     target = f"{user}@{host}"
-    common = ["-e", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", "-p", str(port)]
+    ssh_options = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", "-p", str(port)]
     remote = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && cat >> ~/.ssh/authorized_keys"
     try:
+        # sshpass options must precede the ssh command; SSH options belong
+        # after the ssh executable. Otherwise sshpass interprets '-o' itself.
         with pub.open("r", encoding="utf-8") as fh:
-            p = subprocess.run(["sshpass", *common, "ssh", target, remote], stdin=fh, text=True, capture_output=True, timeout=timeout, env=env, check=False)
+            command = ["sshpass", "-e", "ssh", *ssh_options, target, remote]
+            p = subprocess.run(command, stdin=fh, text=True, capture_output=True, timeout=timeout, env=env, check=False)
         if p.returncode != 0:
             return False, (p.stderr or p.stdout or "SSH password authentication failed")[-1200:]
         subprocess.run(["chmod", "600", str(key)], check=False)
