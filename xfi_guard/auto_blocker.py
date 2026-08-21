@@ -19,13 +19,13 @@ class AutoBlocker:
         min_attempts: int = 5,
         min_providers: int = 2,
         db_path: str = "/var/lib/xfi-guard/security.db",
+        attempt_window_seconds: int = 600,
     ):
         self.enabled = enabled
         self.confidence = max(0.0, min(1.0, float(confidence)))
         self.min_attempts = max(1, int(min_attempts))
         self.min_providers = max(2, int(min_providers))
-        # Kept for manual/direct use; the monitor passes its already computed
-        # consensus in event["ai_consensus"] to avoid a second AI request.
+        self.attempt_window_seconds = max(60, int(attempt_window_seconds))
         self.ai = AIAnalyzer()
         self.db = SecurityDB(db_path)
         self.whitelist = self._load_whitelist()
@@ -58,17 +58,17 @@ class AutoBlocker:
                 continue
             if parsed.version != 4 or not parsed.is_global or parsed.compressed in self.whitelist:
                 continue
-            grouped.setdefault(parsed.compressed, []).append(event)
+            normalized = parsed.compressed
+            grouped.setdefault(normalized, []).append(event)
+            self.db.record_ssh_attempt(normalized)
 
         blocked = {str(ip).strip() for ip in list_blocked_ips()}
         results: list[dict] = []
         for ip, items in grouped.items():
-            attempts = len(items)
+            attempts = self.db.recent_ssh_attempts(ip, self.attempt_window_seconds)
             if attempts < self.min_attempts or ip in blocked:
                 continue
 
-            # The monitor is the single source of AI events. Reuse its result
-            # instead of invoking Gemini/Groq/OpenRouter a second time.
             analysis = next(
                 (item.get("ai_consensus") for item in items if item.get("ai_consensus")),
                 None,
