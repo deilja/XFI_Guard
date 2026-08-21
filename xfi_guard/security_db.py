@@ -37,3 +37,42 @@ class SecurityDB:
                 "INSERT INTO security_events(event_type, ip, description, risk, confidence, attempts) VALUES(?,?,?,?,?,?)",
                 (event_type, ip, str(description)[:1000], risk, float(confidence), int(attempts)),
             )
+
+    def record_ssh_attempt(self, ip: str) -> None:
+        """Persist one normalized SSH failure for cross-cycle detection."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO security_events(event_type, ip, description, risk, confidence, attempts) VALUES(?,?,?,?,?,?)",
+                ("ssh_auth_failed", ip, "SSH authentication failure", "unknown", 0.0, 1),
+            )
+
+    def recent_ssh_attempts(self, ip: str, window_seconds: int = 600) -> int:
+        """Return SSH failures seen for an IP during the rolling time window."""
+        window_seconds = max(1, int(window_seconds))
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) FROM security_events
+                   WHERE event_type='ssh_auth_failed' AND ip=?
+                   AND timestamp >= datetime('now', ?)""",
+                (ip, f"-{window_seconds} seconds"),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def recent_threats(self, limit: int = 50) -> list[dict]:
+        """Return recent automatic-defense records for diagnostics/UI."""
+        limit = max(1, min(int(limit), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT timestamp,event_type,ip,description,risk,confidence,attempts
+                   FROM security_events
+                   WHERE event_type IN ('auto_block','ssh_ai_check')
+                   ORDER BY id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "timestamp": r[0], "event_type": r[1], "ip": r[2],
+                "description": r[3], "risk": r[4], "confidence": r[5], "attempts": r[6],
+            }
+            for r in rows
+        ]
