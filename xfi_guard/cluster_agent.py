@@ -1,8 +1,4 @@
-"""Lightweight Multi-VPS cluster agent.
-
-Transport is deliberately stdlib-only: HTTPS POST to a configured master endpoint.
-The agent reports heartbeats/threats and consumes signed block commands.
-"""
+"""Lightweight Multi-VPS cluster agent."""
 from __future__ import annotations
 
 import argparse
@@ -12,15 +8,18 @@ import os
 import time
 import urllib.request
 
-from .cluster import accept_event, make_event, register_global_block
-from .threat_intel import active
+from .cluster import make_event, register_global_block
+from .cluster_apply import fail2ban_block
 
 LOG = logging.getLogger("xfi_guard.cluster_agent")
 
 
 def _post(url: str, payload: dict, token: str = "") -> dict:
     body = json.dumps(payload).encode()
-    req = urllib.request.Request(url, body, method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}" if token else ""})
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, body, method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=10) as response:
         return json.loads(response.read().decode())
 
@@ -43,9 +42,15 @@ def apply_commands(commands: list[dict]) -> int:
             continue
         ip = command.get("ip")
         until = float(command.get("until", 0))
-        if ip and until > time.time():
+        if not ip or until <= time.time():
+            continue
+        ok, detail = fail2ban_block(ip)
+        if ok:
             register_global_block(ip, command.get("source_node", "cluster"), until)
             count += 1
+            LOG.warning("cluster block applied via Fail2Ban: ip=%s source=%s", ip, command.get("source_node", "cluster"))
+        else:
+            LOG.error("cluster Fail2Ban block failed: ip=%s error=%s", ip, detail)
     return count
 
 
@@ -63,8 +68,9 @@ def run(config: dict) -> None:
     interval = max(15, int(cluster.get("heartbeat_interval", 30)))
     while True:
         try:
-            heartbeat(master, node, secret, token)
-            LOG.debug("cluster heartbeat sent: %s", node)
+            response = heartbeat(master, node, secret, token)
+            applied = apply_commands(response.get("commands", []))
+            LOG.debug("cluster heartbeat sent: %s; blocks applied=%s", node, applied)
         except Exception as exc:
             LOG.warning("cluster heartbeat failed: %s", exc)
         time.sleep(interval)
