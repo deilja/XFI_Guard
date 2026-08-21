@@ -47,7 +47,9 @@ def collect_fail2ban() -> list[dict[str, Any]]:
 
 
 def collect_ufw() -> list[dict[str, Any]]:
-    code, out, _ = _run(["ufw", "status", "number"])
+    # Correct UFW syntax is `status numbered`; the previous `status number`
+    # silently returned no rules on current Ubuntu/UFW releases.
+    code, out, _ = _run(["ufw", "status", "numbered"])
     if code != 0:
         return []
     result: list[dict[str, Any]] = []
@@ -59,7 +61,7 @@ def collect_ufw() -> list[dict[str, Any]]:
             ip = _public_ipv4(raw)
             if ip and ip not in seen:
                 seen.add(ip)
-                result.append({"ip": ip, "source": "ufw", "event_type": "ufw_blocked", "severity": "critical", "reason": "UFW: адрес уже находится в deny/reject правилах"})
+                result.append({"ip": ip, "source": "ufw", "event_type": "ufw_blocked", "severity": "critical", "reason": "UFW: адрес находится в deny/reject правилах"})
     return result
 
 
@@ -116,7 +118,7 @@ def _risk_for(entry: dict[str, Any]) -> tuple[int, str]:
 
 
 def collect_attack_surface() -> dict[str, Any]:
-    """Build a complete inventory and mark blocked IPs instead of discarding them."""
+    """Build a complete inventory and distinguish active from already blocked threats."""
     sources = {"fail2ban": collect_fail2ban(), "ufw": collect_ufw(), "ssh": collect_ssh()}
     blocked = _ufw_blocked()
     blocked.update(x["ip"] for x in sources["fail2ban"])
@@ -156,12 +158,15 @@ def collect_attack_surface() -> dict[str, Any]:
 
     ips = sorted(grouped.values(), key=lambda x: (-x["risk_score"], -x["events"], x["ip"]))
     active = [x for x in ips if not x["blocked"]]
+    blocked_entries = [x for x in ips if x["blocked"]]
     return {
         "generated_from": ["fail2ban", "ufw", "ssh"],
         "blocked_count": len(blocked),
         "active_count": len(active),
-        "fail2ban_count": sum(1 for x in sources["fail2ban"] if x["ip"] in blocked),
-        "ufw_count": sum(1 for x in sources["ufw"] if x["ip"] in blocked),
+        "blocked_critical_count": sum(1 for x in blocked_entries if x["risk_score"] >= 85),
+        "active_critical_count": sum(1 for x in active if x["risk_score"] >= 85),
+        "fail2ban_count": len({x["ip"] for x in sources["fail2ban"]}),
+        "ufw_count": len({x["ip"] for x in sources["ufw"]}),
         "ssh_count": len(sources["ssh"]),
         "ips": ips,
     }
