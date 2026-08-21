@@ -10,6 +10,7 @@ import urllib.request
 
 from .cluster import make_event, register_global_block
 from .cluster_apply import fail2ban_block
+from .firewall import list_blocked_ips
 
 LOG = logging.getLogger("xfi_guard.cluster_agent")
 
@@ -17,15 +18,14 @@ LOG = logging.getLogger("xfi_guard.cluster_agent")
 def _post(url: str, payload: dict, token: str = "") -> dict:
     body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if token: headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, body, method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=10) as response:
         return json.loads(response.read().decode())
 
 
 def heartbeat(master: str, node: str, secret: str, token: str = "") -> dict:
-    payload = {"node": node, "timestamp": time.time(), "status": "online"}
+    payload = {"node": node, "timestamp": time.time(), "status": "online", "blocked": list_blocked_ips()[:500]}
     payload["event"] = make_event("1.1.1.1", node, 0, "info", 0, "heartbeat", secret)
     return _post(master.rstrip("/") + "/heartbeat", payload, token)
 
@@ -38,12 +38,9 @@ def publish(master: str, node: str, secret: str, threat: dict, token: str = "") 
 def apply_commands(commands: list[dict]) -> int:
     count = 0
     for command in commands:
-        if command.get("action") != "block":
-            continue
-        ip = command.get("ip")
-        until = float(command.get("until", 0))
-        if not ip or until <= time.time():
-            continue
+        if command.get("action") != "block": continue
+        ip = command.get("ip"); until = float(command.get("until", 0))
+        if not ip or until <= time.time(): continue
         ok, detail = fail2ban_block(ip)
         if ok:
             register_global_block(ip, command.get("source_node", "cluster"), until)
@@ -57,8 +54,7 @@ def apply_commands(commands: list[dict]) -> int:
 def run(config: dict) -> None:
     cluster = config.get("cluster", {})
     if not cluster.get("enabled"):
-        LOG.info("Multi-VPS cluster disabled")
-        return
+        LOG.info("Multi-VPS cluster disabled"); return
     master = cluster.get("master_url")
     secret = os.getenv("XFI_GUARD_CLUSTER_SECRET", cluster.get("secret", ""))
     node = cluster.get("node_id", os.uname().nodename)
@@ -77,15 +73,11 @@ def run(config: dict) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="/opt/xfi-guard/config.toml")
+    parser = argparse.ArgumentParser(); parser.add_argument("--config", default="/opt/xfi-guard/config.toml")
     args = parser.parse_args()
     import tomllib
-    with open(args.config, "rb") as fh:
-        config = tomllib.load(fh)
-    logging.basicConfig(level=os.getenv("XFI_GUARD_LOG_LEVEL", "INFO"))
-    run(config)
+    with open(args.config, "rb") as fh: config = tomllib.load(fh)
+    logging.basicConfig(level=os.getenv("XFI_GUARD_LOG_LEVEL", "INFO")); run(config)
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
