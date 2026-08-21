@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+DEFAULT_IDENTITY_FILE = Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
+
+
 @dataclass(frozen=True)
 class Node:
     name: str
@@ -17,6 +20,7 @@ class Node:
     user: str = "root"
     port: int = 22
     enabled: bool = True
+    identity_file: str = str(DEFAULT_IDENTITY_FILE)
 
 
 def _normalize_host_port(host: str, port: int = 22) -> tuple[str, int]:
@@ -50,6 +54,7 @@ def load_nodes(path: str | Path = "config.toml") -> list[Node]:
         name = str(raw.get("name", "")).strip()
         host, port = _normalize_host_port(raw.get("host", ""), raw.get("port", 22))
         user = str(raw.get("user", "root")).strip() or "root"
+        identity_file = str(raw.get("identity_file", str(DEFAULT_IDENTITY_FILE))).strip() or str(DEFAULT_IDENTITY_FILE)
         if not name or not host or not (1 <= port <= 65535):
             continue
         try:
@@ -57,12 +62,16 @@ def load_nodes(path: str | Path = "config.toml") -> list[Node]:
         except ValueError:
             if any(c in host for c in " /\\\t\r\n"):
                 continue
-        result.append(Node(name=name, host=host, user=user, port=port))
+        result.append(Node(name=name, host=host, user=user, port=port, identity_file=identity_file))
     return result
 
 
 def _ssh_base(node: Node) -> list[str]:
-    return ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5", "-p", str(node.port), f"{node.user}@{node.host}"]
+    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5", "-p", str(node.port)]
+    identity = Path(os.path.expanduser(node.identity_file))
+    if identity.exists():
+        cmd[1:1] = ["-i", str(identity)]
+    return cmd + [f"{node.user}@{node.host}"]
 
 
 def host_key_fingerprint(node: Node, timeout: int = 10) -> tuple[bool, str]:
