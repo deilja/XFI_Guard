@@ -1,8 +1,8 @@
 """RouterAI adapter for XFI Guard.
 
 RouterAI exposes an OpenAI-compatible API. All models visible to the account
-are discoverable; free models are always preferred, while paid models may be
-used as an explicit fallback.
+are discoverable; free models are preferred, while paid models remain available
+as an explicit fallback without a hardcoded model limit.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ class RouterAIAdapter:
         self.last_error = ""
         self.last_model = ""
         self._models_cache: list[str] = []
+        self._models_meta_cache: dict[str, dict] = {}
         self._models_cache_ts = 0.0
         self._free_cache: list[str] = []
         self._free_cache_ts = 0.0
@@ -33,7 +34,7 @@ class RouterAIAdapter:
         return bool(self.api_key)
 
     def _request(self, method: str, url: str, payload: dict | None = None) -> dict:
-        headers = {"Accept": "application/json", "User-Agent": "XFI-Guard/1.8"}
+        headers = {"Accept": "application/json", "User-Agent": "XFI-Guard/1.9"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         data = None
@@ -45,47 +46,90 @@ class RouterAIAdapter:
             return json.loads(response.read().decode("utf-8"))
 
     def models(self, force: bool = False) -> list[str]:
-        """Return every model ID exposed by RouterAI; no hardcoded model filter."""
+        """Return every model exposed by RouterAI; never truncate the catalogue."""
         if not self.configured:
             return []
         if not force and self._models_cache and time.monotonic() - self._models_cache_ts < self.cache_ttl:
             return list(self._models_cache)
         try:
             data = self._request("GET", f"{BASE_URL}/models")
-            result = [str(item.get("id")) for item in data.get("data", []) if item.get("id")]
+            items = data.get("data", []) if isinstance(data, dict) else []
+            result: list[str] = []
+            meta: dict[str, dict] = {}
+            for item in items:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                model = str(item["id"])
+                result.append(model)
+                meta[model] = item
             self._models_cache = list(dict.fromkeys(result))
+            self._models_meta_cache = meta
             self._models_cache_ts = time.monotonic()
             return list(self._models_cache)
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return list(self._models_cache)
 
+    @classmethod
+    def _endpoint_items(cls, data: dict) -> list[dict]:
+        """Accept both known RouterAI endpoint response shapes."""
+        if not isinstance(data, dict):
+            return []
+        payload = data.get("data")
+        if isinstance(payload, dict):
+            endpoints = payload.get("endpoints")
+            if isinstance(endpoints, list):
+                return [x for x in endpoints if isinstance(x, dict)]
+            if isinstance(payload.get("data"), list):
+                return [x for x in payload["data"] if isinstance(x, dict)]
+        if isinstance(payload, list):
+            return [x for x in payload if isinstance(x, dict)]
+        endpoints = data.get("endpoints")
+        if isinstance(endpoints, list):
+            return [x for x in endpoints if isinstance(x, dict)]
+        return []
+
+    @classmethod
+    def _pricing_is_free(cls, pricing: dict | None) -> bool:
+        if not isinstance(pricing, dict):
+            return False
+        prompt = pricing.get("prompt", pricing.get("input"))
+        completion = pricing.get("completion", pricing.get("output"))
+        return cls._zero(prompt) and cls._zero(completion)
+
     def free_models(self, candidates: list[str] | None = None, force: bool = False) -> list[str]:
-        """Return all models whose RouterAI endpoint reports zero pricing."""
+        """Discover every currently free model from RouterAI pricing metadata.
+
+        RouterAI has returned more than one JSON shape for /endpoints, so do not
+        assume data.endpoints is always present. Model-level pricing is also
+        accepted when supplied by /models.
+        """
         if not self.configured:
             return []
         if not force and self._free_cache and time.monotonic() - self._free_cache_ts < self.cache_ttl:
             allowed = set(candidates or self._models_cache or self.models())
             return [m for m in self._free_cache if m in allowed]
+
         candidates = list(dict.fromkeys(candidates or self.models(force=force)))
         result: list[str] = []
         for model in candidates:
+            meta = self._models_meta_cache.get(model) or {}
+            if self._pricing_is_free(meta.get("pricing")):
+                result.append(model)
+                continue
             if "/" not in model:
                 continue
             author, slug = model.split("/", 1)
             try:
                 data = self._request("GET", f"{BASE_URL}/models/{author}/{slug}/endpoints")
-                endpoints = ((data.get("data") or {}).get("endpoints") or [])
-                if any(
-                    self._zero((endpoint.get("pricing") or {}).get("prompt"))
-                    and self._zero((endpoint.get("pricing") or {}).get("completion"))
-                    for endpoint in endpoints
-                ):
+                endpoints = self._endpoint_items(data)
+                if any(self._pricing_is_free(endpoint.get("pricing")) for endpoint in endpoints):
                     result.append(model)
             except error.HTTPError as exc:
                 self.last_error = f"{model}: HTTP {exc.code}"
             except Exception as exc:
                 self.last_error = f"{model}: {type(exc).__name__}: {exc}"
+
         self._free_cache = list(dict.fromkeys(result))
         self._free_cache_ts = time.monotonic()
         return list(self._free_cache)
@@ -107,6 +151,8 @@ class RouterAIAdapter:
 
     @staticmethod
     def _zero(value) -> bool:
+        if isinstance(value, dict):
+            value = value.get("value", value.get("amount"))
         try:
             return float(value or 0) == 0.0
         except (TypeError, ValueError):
@@ -115,6 +161,8 @@ class RouterAIAdapter:
     def health(self, model: str) -> tuple[bool, str]:
         if not self.configured:
             return False, "API key not configured"
+        if not model:
+            return False, "model not selected"
         try:
             result = self._request(
                 "POST", f"{BASE_URL}/chat/completions",
@@ -132,35 +180,23 @@ class RouterAIAdapter:
             return False, f"{type(exc).__name__}: {exc}"
 
     def analyze(self, model: str, prompt: str, allow_paid: bool = True) -> str | None:
-        """Try free models first and then all paid models if enabled.
-
-        There is no hardcoded model whitelist, blacklist, or 12-model cap.
-        RouterAI remains the authority for the current model catalogue.
-        """
+        """Try free models first, then every paid model if enabled."""
         if not self.configured:
             self.last_error = "API key not configured"
             return None
-
         candidates = self.ordered_models(allow_paid=allow_paid, preferred=model)
         if not candidates:
             self.last_error = "no RouterAI models available"
             return None
-
         errors: list[str] = []
         for candidate in candidates:
             try:
                 result = self._request(
                     "POST", f"{BASE_URL}/chat/completions",
-                    {
-                        "model": candidate,
-                        "messages": [
-                            {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "temperature": 0,
-                        "max_tokens": 500,
-                        "provider": {"allow_fallbacks": False},
-                    },
+                    {"model": candidate, "messages": [
+                        {"role": "system", "content": "Ты аналитик безопасности VPS. Отвечай по-русски."},
+                        {"role": "user", "content": prompt},
+                    ], "temperature": 0, "max_tokens": 500, "provider": {"allow_fallbacks": False}},
                 )
                 content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content")
                 if content:
@@ -176,6 +212,5 @@ class RouterAIAdapter:
                 errors.append(f"{candidate}: HTTP {exc.code}: {detail}")
             except Exception as exc:
                 errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
-
         self.last_error = "; ".join(errors[-8:]) or "no RouterAI models available"
         return None
