@@ -1,29 +1,144 @@
 # XFI Guard
 
-Security and monitoring toolkit for VPS infrastructure.
+**XFI Guard** — интеллектуальная система защиты и централизованного управления VPS-инфраструктурой. Она объединяет мониторинг, Threat Intelligence, AI-анализ, Fail2Ban, UFW, SSH-защиту, Telegram-управление и Multi-VPS синхронизацию в единую систему.
 
-## Рабочая версия v1.0
+## Возможности
 
-XFI Guard устанавливается на Ubuntu/Debian VPS и запускается как systemd-сервис. По умолчанию мониторинг работает в безопасном read-only режиме.
-
-### Что входит
-
-- мониторинг CPU/RAM/диска;
-- UFW, Fail2Ban и SSH checks;
-- контроль Xray / x-ui / 3x-ui;
-- контроль сетевых портов;
-- анализ SSH/Fail2Ban событий;
-- дедупликация событий и persistent state;
-- Telegram-бот администратора;
-- Telegram-кнопки управления;
-- Telegram Webhook через Nginx + HTTPS;
-- Gemini / Groq с выбором провайдера и модели;
-- AI Security Center;
-- JSONL журнал мониторинга;
-- systemd;
+- автоматическое обнаружение атак и подозрительных событий;
+- анализ SSH brute-force и Fail2Ban событий;
+- Threat Intelligence и рейтинг угроз 0–100;
+- AI Security Center и консилиум AI-провайдеров;
+- Gemini, Groq, OpenRouter и RouterAI;
+- выбор моделей через API провайдера;
+- fallback между доступными AI-провайдерами;
+- автоматическая блокировка критических угроз без подтверждения администратора;
+- интеграция с Fail2Ban;
+- срок автоматической блокировки — **7 дней**;
+- синхронизация блокировок между VPS;
+- UFW как дополнительный уровень сетевой защиты;
+- Telegram-уведомления о новых блокировках с IP, причиной, рейтингом и AI confidence;
+- централизованное управление несколькими VPS;
+- добавление VPS непосредственно из Telegram;
+- SSH Agent / `known_hosts` без хранения приватных SSH-ключей XFI Guard;
+- проверка состояния XFI Guard и Fail2Ban на узлах;
+- удалённое подключение и bootstrap XFI Guard;
+- persistent state и JSONL журнал событий;
+- systemd-сервисы;
 - unit-тесты и GitHub Actions CI.
 
-## Установка одной командой
+## Архитектура защиты
+
+```text
+Атака
+  ↓
+Логи VPS
+  ↓
+XFI Guard Monitor
+  ↓
+Threat Scoring
+  ↓
+AI Consensus / Fallback
+  ↓
+CRITICAL ≥ 90
+  ↓
+Автоматический BAN
+  ↓
+Fail2Ban + UFW
+  ↓
+7 дней
+  ↓
+Cluster Master
+  ↓
+Все доступные VPS
+  ↓
+Telegram уведомление
+```
+
+Критическая угроза, обнаруженная на одном узле, может быть автоматически распространена на остальные подключённые VPS. Каждый узел применяет блокировку локально через Fail2Ban.
+
+## Multi-VPS
+
+XFI Guard поддерживает кластер из нескольких VPS.
+
+Узлы управляются через Telegram:
+
+```text
+🖥 VPS узлы
+├─ ➕ Добавить VPS
+├─ 🔐 Добавить по паролю
+├─ 🗑 Удалить VPS
+├─ 🔌 Подключить XFI Guard
+├─ 🔄 Проверить VPS
+└─ ⬅️ Главное меню
+```
+
+При добавлении VPS бот запрашивает имя, IP/DNS, SSH пользователя и порт, после чего выполняется проверка SSH host key.
+
+Пароль может использоваться только для первичного подключения и не сохраняется XFI Guard. Для постоянного доступа используется SSH Agent/known_hosts.
+
+## Автоматическая блокировка
+
+AI-критические угрозы блокируются автоматически.
+
+Пример логики:
+
+```text
+AI confidence ≥ заданного порога
+        +
+Threat score = CRITICAL
+        ↓
+Fail2Ban xfi-guard
+        ↓
+bantime = 604800 секунд
+        ↓
+7 дней
+        ↓
+Cluster synchronization
+        ↓
+Telegram notification
+```
+
+Уведомление содержит IP, уровень угрозы, рейтинг, причину, AI-провайдера, уверенность AI, исходный VPS и узлы, на которых применён бан.
+
+## AI Security Center
+
+AI используется как аналитический слой для оценки событий и выбора наиболее подходящего решения.
+
+Поддерживаются:
+
+- Gemini;
+- Groq;
+- OpenRouter;
+- RouterAI;
+- fallback между провайдерами;
+- получение и выбор моделей через API;
+- health-check провайдеров;
+- AI consensus;
+- анализ событий безопасности.
+
+API-ключи хранятся локально и не должны попадать в Git.
+
+## Telegram Bot
+
+Telegram является основной административной панелью XFI Guard.
+
+Доступ ограничивается `XFI_GUARD_ADMIN_IDS`.
+
+Основные разделы:
+
+- 📊 Статус;
+- 🔐 Безопасность;
+- 🛡 Fail2Ban;
+- 🔥 UFW;
+- 🌐 VPN/Xray;
+- 📋 События;
+- 🤖 AI;
+- 🧠 AI Security Center;
+- 🖥 VPS узлы;
+- 🔄 Проверка сейчас;
+- 🔄 Обновление XFI Guard.
+
+## Установка
 
 Для Ubuntu 22.04/24.04 и Debian 12+:
 
@@ -31,205 +146,95 @@ XFI Guard устанавливается на Ubuntu/Debian VPS и запуск�
 curl -fsSL https://raw.githubusercontent.com/deilja/XFI_Guard/main/install.sh | sudo bash
 ```
 
-Альтернативно через wget:
+Альтернативно:
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/deilja/XFI_Guard/main/install.sh | sudo bash
 ```
 
-Скрипт автоматически:
+Установщик создаёт Python virtualenv, устанавливает зависимости, настраивает systemd, каталоги состояния и журналов и запускает XFI Guard.
 
-1. устанавливает системные зависимости;
-2. загружает XFI Guard в `/opt/xfi-guard`;
-3. создаёт Python virtualenv;
-4. устанавливает Python-зависимости;
-5. создаёт `/var/log/xfi-guard` и `/var/lib/xfi-guard`;
-6. устанавливает systemd unit;
-7. запускает `xfi-guard`;
-8. при настройке Telegram спрашивает домен webhook;
-9. при указанном домене устанавливает Nginx и Certbot, получает Let's Encrypt SSL и проксирует `/xfi-guard/webhook` на `127.0.0.1:8080`;
-10. запускает Telegram-бота и регистрирует webhook через Telegram API;
-11. проверяет, что сервисы запущены.
+## Telegram Webhook
 
-### Домен Telegram Webhook
+Поддерживается polling и HTTPS webhook через Nginx.
 
-После ввода Telegram Bot Token и Admin ID установщик задаёт вопрос:
+Схема webhook:
 
 ```text
-Домен для Telegram Webhook (например fin.deilja.online, Enter — polling):
+Telegram
+   ↓
+HTTPS / Nginx
+   ↓
+127.0.0.1:8080
+   ↓
+XFI Guard Bot
 ```
 
-Например:
-
-```text
-fin.deilja.online
-```
-
-В результате бот работает через:
-
-```text
-https://fin.deilja.online/xfi-guard/webhook
-```
-
-Nginx принимает HTTPS и передаёт запросы локальному боту:
-
-```text
-Telegram → HTTPS/Nginx → 127.0.0.1:8080 → XFI Guard
-```
-
-Перед установкой домен должен указывать на VPS, а TCP-порт 80 должен быть доступен для получения сертификата Let's Encrypt. Если домен не указан, сохраняется режим polling.
-
-### Конфигурация webhook
-
-Переменные сохраняются в `/etc/xfi-guard/bot.env`:
-
-```text
-XFI_GUARD_WEBHOOK_DOMAIN=fin.deilja.online
-XFI_GUARD_WEBHOOK_PATH=/xfi-guard/webhook
-XFI_GUARD_WEBHOOK_SECRET=<generated-secret>
-XFI_GUARD_WEBHOOK_HOST=127.0.0.1
-XFI_GUARD_WEBHOOK_PORT=8080
-```
-
-Секрет webhook генерируется автоматически и не попадает в Git.
-
-Пользовательские переменные можно передать перед запуском:
-
-```bash
-sudo XFI_GUARD_DIR=/opt/xfi-guard bash -c 'curl -fsSL https://raw.githubusercontent.com/deilja/XFI_Guard/main/install.sh | bash'
-```
-
-## Проверка
-
-```bash
-systemctl status xfi-guard --no-pager
-journalctl -u xfi-guard -n 100 --no-pager
-tail -n 20 /var/log/xfi-guard/monitor.jsonl
-```
-
-Для Telegram webhook:
-
-```bash
-systemctl status xfi-guard-bot --no-pager
-journalctl -u xfi-guard-bot -n 100 --no-pager
-nginx -t
-curl -I https://fin.deilja.online/xfi-guard/webhook
-```
-
-Статус webhook можно проверить через Telegram Bot API `getWebhookInfo`.
-
-## Telegram Bot
-
-Создайте Telegram-бота через BotFather и подготовьте Telegram ID администратора.
-
-```bash
-install -d -m 0700 /etc/xfi-guard
-nano /etc/xfi-guard/bot.env
-chmod 600 /etc/xfi-guard/bot.env
-```
-
-Содержимое для polling:
-
-```text
-XFI_GUARD_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
-XFI_GUARD_ADMIN_IDS=123456789
-```
-
-Для webhook дополнительные переменные создаёт установщик автоматически.
-
-Для нескольких администраторов:
-
-```text
-XFI_GUARD_ADMIN_IDS=123456789,987654321
-```
-
-Если в репозитории присутствует `systemd/xfi-guard-bot.service`:
-
-```bash
-install -m 0644 /opt/xfi-guard/systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
-systemctl daemon-reload
-systemctl enable --now xfi-guard-bot
-systemctl status xfi-guard-bot --no-pager
-```
-
-В Telegram доступны кнопки:
-
-- 📊 Статус
-- 🔐 Безопасность
-- 🛡 Fail2Ban
-- 🔥 UFW
-- 🌐 VPN/Xray
-- 📋 События
-- 🤖 AI
-- 🧠 AI Security Center
-- 🔄 Проверка сейчас
-- 🔄 Обновить XFI Guard
-
-## Gemini / Groq
-
-AI-провайдер и ключи управляются через Telegram и не должны находиться в Git.
-
-В меню **🤖 AI** доступны:
-
-- выбор Gemini/Groq;
-- Gemini API key;
-- Groq API key;
-- модель Gemini;
-- модель Groq;
-- проверка API;
-- статус AI.
-
-Настройки сохраняются локально:
-
-```text
-/var/lib/xfi-guard/ai.json
-```
-
-Файл должен иметь права `600`.
-
-## AI Security Center
-
-В Telegram доступны:
-
-- анализ событий за 24 часа;
-- топ атакующих IP;
-- AI-анализ сводки;
-- обновление статистики.
-
-AI используется как аналитический слой. Разрушительные действия не выполняются автоматически.
+Webhook secret генерируется автоматически и не хранится в Git.
 
 ## Конфигурация
 
+Основные файлы:
+
 ```text
 /opt/xfi-guard/config.toml
+/etc/xfi-guard/bot.env
 /var/lib/xfi-guard/state.json
+/var/lib/xfi-guard/ai.json
 /var/log/xfi-guard/monitor.jsonl
+```
+
+Multi-VPS узлы добавляются через Telegram или через `[[nodes]]` в `config.toml`.
+
+## Fail2Ban
+
+XFI Guard использует отдельный jail `xfi-guard` для автоматических блокировок.
+
+Рекомендуемый срок блокировки:
+
+```text
+604800 секунд = 7 дней
+```
+
+Проверка:
+
+```bash
+sudo fail2ban-client status
+sudo fail2ban-client status xfi-guard
+sudo fail2ban-client get xfi-guard bantime
+```
+
+## Проверка системы
+
+```bash
+systemctl status xfi-guard --no-pager
+systemctl status xfi-guard-bot --no-pager
+journalctl -u xfi-guard -n 100 --no-pager
+journalctl -u xfi-guard-bot -n 100 --no-pager
+sudo fail2ban-client status xfi-guard
 ```
 
 ## Обновление
 
 ```bash
 cd /opt/xfi-guard
-git pull --ff-only
+git pull --ff-only origin main
 /opt/xfi-guard/.venv/bin/pip install -r requirements.txt 2>/dev/null || true
-systemctl restart xfi-guard
-systemctl restart xfi-guard-bot 2>/dev/null || true
-```
-
-## Диагностика
-
-```bash
-systemctl status xfi-guard --no-pager
-journalctl -u xfi-guard -f
-systemctl status xfi-guard-bot --no-pager
-journalctl -u xfi-guard-bot -n 100 --no-pager
+sudo systemctl restart xfi-guard
+sudo systemctl restart xfi-guard-bot
 ```
 
 ## Безопасность
 
-- секреты не хранятся в Git;
-- API keys хранятся локально с ограниченными правами;
-- webhook secret хранится только в `/etc/xfi-guard/bot.env`;
-- мониторинг read-only по умолчанию;
-- потенциально разрушительные действия должны требовать явного подтверждения администратора;
-- Telegram-управление ограничено `XFI_GUARD_ADMIN_IDS`.
+- секреты и API-ключи не хранятся в Git;
+- Telegram-управление ограничено администраторами;
+- SSH private keys не хранятся XFI Guard;
+- SSH host keys проверяются через `known_hosts`;
+- пароли для bootstrap не сохраняются;
+- межузловые команды должны проходить проверку подлинности;
+- блокировка применяется локально через Fail2Ban;
+- AI-автоматизация ограничивается настроенным порогом угрозы.
+
+## Статус проекта
+
+XFI Guard развивается как распределённая система защиты VPS-инфраструктуры с единым Telegram Control Center, AI-анализом и автоматической реакцией на критические угрозы.
