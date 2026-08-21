@@ -16,10 +16,20 @@ class RouterAIFallbackTests(unittest.TestCase):
         result = adapter.ordered_models(["paid/model", "free/model"], allow_paid=False)
         self.assertEqual(result, ["free/model"])
 
+    def test_ordered_models_has_no_model_cap(self):
+        adapter = RouterAIAdapter(api_key="test")
+        models = [f"model/{i}" for i in range(64)]
+        free = models[:32]
+        adapter.free_models = lambda candidates=None, force=False: free
+        result = adapter.ordered_models(models, allow_paid=True)
+        self.assertEqual(len(result), 64)
+        self.assertEqual(result[:32], free)
+        self.assertEqual(result[32:], models[32:])
+
     def test_analyze_tries_free_before_paid(self):
         adapter = RouterAIAdapter(api_key="test")
         calls = []
-        adapter.ordered_models = lambda candidates=None, allow_paid=True: ["free/model", "paid/model"]
+        adapter.ordered_models = lambda candidates=None, allow_paid=True, preferred=None: ["free/model", "paid/model"]
         adapter.free_models = lambda candidates=None, force=False: ["free/model"]
 
         def fake_request(method, url, payload=None):
