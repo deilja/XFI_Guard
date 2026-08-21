@@ -20,6 +20,30 @@ def _valid_name(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value))
 
 
+def _normalize_host_port(host: str, port: int = 22) -> tuple[str, int]:
+    """Normalize legacy host values such as 2.27.37.78:22.
+
+    Older configurations could accidentally store the SSH port inside `host`.
+    SSH and ssh-keyscan must receive the hostname and port as separate values.
+    """
+    host = str(host or "").strip()
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 22
+
+    m = re.fullmatch(r"\[([^\]]+)\]:(\d{1,5})", host)
+    if m:
+        return m.group(1), int(m.group(2))
+
+    if host.count(":") == 1:
+        candidate, candidate_port = host.rsplit(":", 1)
+        if candidate_port.isdigit() and 1 <= int(candidate_port) <= 65535:
+            return candidate, int(candidate_port)
+
+    return host, port
+
+
 def _valid_host(value: str) -> bool:
     if len(value) > 253 or any(c in value for c in " /\\\t\r\n"):
         return False
@@ -37,11 +61,21 @@ def _load() -> dict:
 
 
 def list_configured_nodes() -> list[dict]:
-    return [dict(x) for x in (_load().get("nodes", []) or []) if isinstance(x, dict)]
+    result: list[dict] = []
+    for raw in (_load().get("nodes", []) or []):
+        if not isinstance(raw, dict):
+            continue
+        node = dict(raw)
+        host, port = _normalize_host_port(node.get("host", ""), node.get("port", 22))
+        node["host"] = host
+        node["port"] = port
+        result.append(node)
+    return result
 
 
 def add_node(name: str, host: str, user: str = "root", port: int = 22) -> None:
     name, host, user = name.strip(), host.strip(), user.strip() or "root"
+    host, port = _normalize_host_port(host, port)
     if not _valid_name(name):
         raise ValueError("Имя VPS: только A-Z, a-z, 0-9, _, ., -; максимум 64 символа")
     if not _valid_host(host):
