@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -18,6 +19,22 @@ class Node:
     enabled: bool = True
 
 
+def _normalize_host_port(host: str, port: int = 22) -> tuple[str, int]:
+    host = str(host or "").strip()
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 22
+    m = re.fullmatch(r"\[([^\]]+)\]:(\d{1,5})", host)
+    if m:
+        return m.group(1), int(m.group(2))
+    if host.count(":") == 1:
+        candidate, candidate_port = host.rsplit(":", 1)
+        if candidate_port.isdigit() and 1 <= int(candidate_port) <= 65535:
+            return candidate, int(candidate_port)
+    return host, port
+
+
 def load_nodes(path: str | Path = "config.toml") -> list[Node]:
     p = Path(path)
     if not p.exists():
@@ -31,12 +48,8 @@ def load_nodes(path: str | Path = "config.toml") -> list[Node]:
         if not isinstance(raw, dict) or not raw.get("enabled", True):
             continue
         name = str(raw.get("name", "")).strip()
-        host = str(raw.get("host", "")).strip()
+        host, port = _normalize_host_port(raw.get("host", ""), raw.get("port", 22))
         user = str(raw.get("user", "root")).strip() or "root"
-        try:
-            port = int(raw.get("port", 22))
-        except (TypeError, ValueError):
-            continue
         if not name or not host or not (1 <= port <= 65535):
             continue
         try:
@@ -49,16 +62,11 @@ def load_nodes(path: str | Path = "config.toml") -> list[Node]:
 
 
 def _ssh_base(node: Node) -> list[str]:
-    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-p", str(node.port), f"{node.user}@{node.host}"]
+    return ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5", "-p", str(node.port), f"{node.user}@{node.host}"]
 
 
 def host_key_fingerprint(node: Node, timeout: int = 10) -> tuple[bool, str]:
-    """Fetch the remote ED25519 host key and return its SHA256 fingerprint.
-
-    This is deliberately a separate enrollment step. It does not disable
-    StrictHostKeyChecking for normal connections and does not modify
-    known_hosts.
-    """
+    """Fetch the remote ED25519 host key and return its SHA256 fingerprint."""
     cmd = ["ssh-keyscan", "-T", str(max(1, timeout)), "-t", "ed25519", "-p", str(node.port), node.host]
     try:
         p = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout + 3, check=False)
@@ -76,10 +84,7 @@ def host_key_fingerprint(node: Node, timeout: int = 10) -> tuple[bool, str]:
 
 
 def enroll_host_key(node: Node, timeout: int = 10) -> tuple[bool, str]:
-    """Add the currently presented ED25519 key to the user's known_hosts.
-
-    The caller must have explicitly confirmed the displayed fingerprint.
-    """
+    """Add the currently presented ED25519 key after explicit bot confirmation."""
     ssh_dir = Path(os.path.expanduser("~/.ssh"))
     ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     known_hosts = ssh_dir / "known_hosts"
