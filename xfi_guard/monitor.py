@@ -12,6 +12,7 @@ from pathlib import Path
 from .ai import AIAnalyzer
 from .alerts import AlertManager
 from .auto_blocker import AutoBlocker
+from .auto_defense import reconcile_expired
 from .checks import check_disk, check_memory
 from .config import MonitorConfig
 from .events import deduplicate, parse_file
@@ -79,6 +80,23 @@ def _notify_auto_blocks(results: list[dict]) -> None:
         for item in failed[:20]:
             lines.append(f"• {item['ip']} — {item.get('message', 'ошибка Fail2Ban/UFW')}")
         notify("\n".join(lines)[:3900])
+
+
+def _notify_expired(expired: list[dict]) -> None:
+    if not expired:
+        return
+    lines = [
+        "🔓 XFI Guard — блокировки автоматически сняты",
+        "",
+        "Причина: истёк срок 7 дней",
+        "Backend: Fail2Ban + UFW",
+        "",
+        "IP:",
+    ]
+    lines.extend(f"• {item['ip']}" for item in expired[:50])
+    if len(expired) > 50:
+        lines.append(f"… ещё {len(expired) - 50} IP")
+    notify("\n".join(lines)[:3900])
 
 
 def _notify_ai_consensus(event: dict, result: dict) -> None:
@@ -165,9 +183,6 @@ def run_forever(config: MonitorConfig) -> None:
             if defense_results:
                 for item in defense_results:
                     if item.get("action") == "blocked":
-                        # Dedicated, machine-readable journal event consumed by the
-                        # xfi-guard Fail2Ban jail. Fail2Ban then enforces the same
-                        # seven-day ban and keeps its state synchronized with UFW.
                         LOG.warning("XFI-GUARD THREAT %s", item["ip"])
                 write_snapshot(config.output_file, snapshot, events + [{"event_type": "auto_defense", **item} for item in defense_results])
                 _notify_auto_blocks(defense_results)
@@ -175,6 +190,11 @@ def run_forever(config: MonitorConfig) -> None:
                 write_snapshot(config.output_file, snapshot, events)
         else:
             write_snapshot(config.output_file, snapshot, events)
+
+        expired = reconcile_expired()
+        if expired:
+            _notify_expired(expired)
+            LOG.info("expired XFI Guard bans reconciled: %s", [item["ip"] for item in expired])
 
         if alerts:
             for event in events:
