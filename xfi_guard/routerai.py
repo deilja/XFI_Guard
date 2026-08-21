@@ -18,7 +18,16 @@ class RouterAIAdapter:
     provider = "routerai"
 
     def __init__(self, api_key: str | None = None, timeout: float = 20.0):
-        self.api_key = (api_key or os.getenv("ROUTERAI_API_KEY") or "").strip()
+        # Keep standalone adapter usage consistent with AIAnalyzer: persistent
+        # AI settings are the primary source, environment is the fallback.
+        if api_key is None:
+            try:
+                from .ai_store import load
+                stored = load().get("routerai_key") or ""
+            except Exception:
+                stored = ""
+            api_key = stored or os.getenv("ROUTERAI_API_KEY") or ""
+        self.api_key = str(api_key).strip()
         self.timeout = timeout
         self.last_error = ""
         self.last_model = ""
@@ -39,10 +48,6 @@ class RouterAIAdapter:
             "User-Agent": "XFI-Guard/1.9",
         }
         if self.api_key:
-            # urllib sends HTTP header values using latin-1. A copied key that
-            # contains Cyrillic/non-ASCII characters therefore fails before the
-            # request reaches RouterAI. Report that configuration error clearly
-            # instead of leaking UnicodeEncodeError into the Telegram UI.
             try:
                 self.api_key.encode("ascii")
             except UnicodeEncodeError as exc:
@@ -90,7 +95,6 @@ class RouterAIAdapter:
 
     @classmethod
     def _endpoint_items(cls, data: dict) -> list[dict]:
-        """Accept all documented RouterAI endpoint response shapes."""
         if not isinstance(data, dict):
             return []
         payload = data.get("data")
