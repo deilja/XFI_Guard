@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import ipaddress
+import os
 import subprocess
 from pathlib import Path
 
@@ -11,11 +12,14 @@ from .nodes import load_nodes
 
 def _ban_node(node, ip: str, timeout: int = 12) -> dict:
     target = f"{node.user}@{node.host}"
+    identity = Path(os.path.expanduser(node.identity_file))
     cmd = [
-        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=7",
-        "-o", "StrictHostKeyChecking=yes", "-p", str(node.port), target,
-        "sudo", "fail2ban-client", "set", "xfi-guard", "banip", ip,
+        "ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+        "-o", "ConnectTimeout=7", "-o", "StrictHostKeyChecking=yes",
     ]
+    if identity.is_file():
+        cmd += ["-i", str(identity)]
+    cmd += ["-p", str(node.port), target, "sudo", "fail2ban-client", "set", "xfi-guard", "banip", ip]
     try:
         p = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False)
         if p.returncode == 0:
@@ -26,11 +30,10 @@ def _ban_node(node, ip: str, timeout: int = 12) -> dict:
 
 
 def sync_ban(ip: str, config_path: str | Path = "/opt/xfi-guard/config.toml") -> list[dict]:
-    """Apply an already-approved local ban to every configured remote VPS.
+    """Apply an approved local ban to every configured remote VPS.
 
-    Authentication is delegated to the system SSH agent/known_hosts. No keys or
-    passwords are stored by XFI Guard. The remote xfi-guard jail controls the
-    seven-day bantime.
+    Authentication uses the configured per-node identity file and strict
+    known_hosts verification. No passwords are stored by XFI Guard.
     """
     try:
         parsed = ipaddress.ip_address(str(ip).strip())
