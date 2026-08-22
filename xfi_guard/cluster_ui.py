@@ -48,11 +48,18 @@ def _format_nodes(data: dict) -> str:
     lines = []
     for node in nodes:
         icon = "🟢" if node.get("online") else "🔴"
-        age = node.get("last_seen", 0)
         lines.append(f"{icon} {node.get('name', '-')} — {'ONLINE' if node.get('online') else 'OFFLINE'}")
         blocked = node.get("blocked", [])
         lines.append(f"   🔒 Блокировок: {len(blocked)}")
     return "\n".join(lines)
+
+
+def _live_blocks() -> list[dict]:
+    try:
+        data = _get("/blocks")
+        return list(data.get("blocks", []))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return [{"ip": ip, **item} for ip, item in _state_blocks().items()]
 
 
 def cluster_view() -> str:
@@ -62,7 +69,7 @@ def cluster_view() -> str:
         total = int(health.get("nodes", 0))
         online = int(health.get("online", 0))
         threats = int(health.get("threats", 0))
-        blocks = _state_blocks()
+        blocks = _live_blocks()
         return (
             "🌐 XFI GUARD • CLUSTER CENTER\n\n"
             f"🖥 Узлы: {online}/{total} онлайн\n"
@@ -87,15 +94,18 @@ def cluster_view() -> str:
 
 
 def blocks_view() -> str:
-    blocks = _state_blocks()
+    blocks = _live_blocks()
     if not blocks:
         return "🌐 ГЛОБАЛЬНЫЕ БЛОКИРОВКИ\n\nАктивных глобальных блокировок нет."
     lines = ["🌐 ГЛОБАЛЬНЫЕ БЛОКИРОВКИ", "", f"Всего: {len(blocks)}", ""]
-    for ip, item in list(blocks.items())[:40]:
-        nodes = item.get("nodes", {})
+    for item in blocks[:40]:
+        ip = item.get("ip", "-")
+        nodes = item.get("nodes", {}) or {}
         applied = sum(1 for state in nodes.values() if state == "blocked")
         queued = sum(1 for state in nodes.values() if state == "queued")
+        source = item.get("source_node", "-")
         lines.append(f"🚫 {ip}")
+        lines.append(f"   Источник: {source}")
         lines.append(f"   VPS: {applied} ✅ / {queued} ⏳")
         lines.append(f"   До: {item.get('until', '-')}")
     if len(blocks) > 40:
