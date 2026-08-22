@@ -9,25 +9,27 @@ def _labels(markup):
     return {getattr(button, "text", "") for row in rows for button in row}
 
 
-def test_main_menu_exposes_operational_controls():
+def test_main_menu_exposes_compact_operational_controls():
     labels = _labels(bot.main_kb())
-    assert "📋 События" in labels
-    assert "⚙️ 3X-UI" in labels
-    assert "🤖 AI" in labels
-    assert "🔄 Обновить XFI Guard" in labels
-    assert "⚡ Принудительное обновление" in labels
+    expected = {
+        "📊 Статус", "🛡 Защита", "🌐 VPN/Xray", "🤖 AI", "🖥 VPS",
+        "🌐 Кластер", "🚫 Блокировки", "📋 События", "⚙️ 3X-UI",
+        "🔄 Проверка", "🔄 Обновить", "❓ Помощь",
+    }
+    assert labels == expected
 
 
 def test_main_menu_buttons_have_handlers():
-    """Every main-menu control is handled either in bot.py or a delegated UI module."""
-    bot_source = inspect.getsource(bot.build_dispatcher)
-    xui_source = inspect.getsource(xui_ui.install_xui_handlers)
-    sources = bot_source + "\n" + xui_source
-    delegated = {"⚙️ 3X-UI"}
+    """Every compact main-menu button has a direct handler or delegated module."""
+    source = inspect.getsource(bot.build_dispatcher)
     for label in _labels(bot.main_kb()):
-        if label in {"⬅️ Главное меню"}:
-            continue
-        assert label in sources or label in delegated, f"Нет обработчика/ссылки для кнопки {label}"
+        assert label in source, f"Нет обработчика для кнопки {label}"
+
+
+def test_no_legacy_main_menu_labels():
+    labels = _labels(bot.main_kb())
+    legacy = {"🔄 Обновить XFI Guard", "⚡ Принудительное обновление", "🔐 Безопасность"}
+    assert not labels.intersection(legacy)
 
 
 def test_3xui_menu_is_registered_from_dispatcher():
