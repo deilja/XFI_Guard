@@ -7,17 +7,39 @@ import subprocess
 from pathlib import Path
 
 
+def _local_cluster_settings() -> tuple[str, str, str]:
+    """Read cluster credentials only on the XFI Guard controller during provisioning."""
+    try:
+        import tomllib
+        path = Path(os.getenv("XFI_GUARD_CONFIG", "/opt/xfi-guard/config.toml"))
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        cluster = data.get("cluster", {}) or {}
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        cluster = {}
+    master = str(cluster.get("master_url", "") or os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", "")).strip()
+    secret = str(cluster.get("secret", "") or os.getenv("XFI_GUARD_CLUSTER_SECRET", "")).strip()
+    token = str(cluster.get("token", "") or os.getenv("XFI_GUARD_CLUSTER_TOKEN", "")).strip()
+    return master, secret, token
+
+
 def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60,
               identity_file: str | None = None, *, node_id: str | None = None,
               cluster_master: str | None = None, cluster_secret: str | None = None,
               cluster_token: str | None = None) -> tuple[bool, str]:
-    """Install/repair XFI Guard, protection stack and optionally cluster-agent."""
+    """Install/repair XFI Guard, protection stack and automatically enroll the VPS in the cluster."""
     if not host or any(c.isspace() for c in host):
         return False, "invalid host"
     if not 1 <= int(port) <= 65535:
         return False, "invalid port"
     target = f"{user}@{host}"
+
+    local_master, local_secret, local_token = _local_cluster_settings()
+    cluster_master = cluster_master or local_master
+    cluster_secret = cluster_secret or local_secret
+    cluster_token = cluster_token or local_token
+    node_id = node_id or host
     cluster_enabled = bool(cluster_master and cluster_secret and node_id)
+
     remote = r'''set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -72,18 +94,12 @@ fi
 install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
 '''
     if cluster_enabled:
-        values = {
-            "master": cluster_master,
-            "secret": cluster_secret,
-            "token": cluster_token or "",
-            "node": node_id,
-        }
         remote += "\n# XFI Guard cluster enrollment\n"
         remote += "cat > /etc/xfi-guard/cluster.env <<'XFI_CLUSTER_ENV'\n"
-        remote += "XFI_GUARD_CLUSTER_MASTER_URL=" + shlex.quote(values["master"]) + "\n"
-        remote += "XFI_GUARD_CLUSTER_SECRET=" + shlex.quote(values["secret"]) + "\n"
-        remote += "XFI_GUARD_CLUSTER_TOKEN=" + shlex.quote(values["token"]) + "\n"
-        remote += "XFI_GUARD_CLUSTER_NODE_ID=" + shlex.quote(values["node"]) + "\n"
+        remote += "XFI_GUARD_CLUSTER_MASTER_URL=" + shlex.quote(cluster_master) + "\n"
+        remote += "XFI_GUARD_CLUSTER_SECRET=" + shlex.quote(cluster_secret) + "\n"
+        remote += "XFI_GUARD_CLUSTER_TOKEN=" + shlex.quote(cluster_token or "") + "\n"
+        remote += "XFI_GUARD_CLUSTER_NODE_ID=" + shlex.quote(node_id) + "\n"
         remote += "XFI_CLUSTER_ENV\nchmod 0600 /etc/xfi-guard/cluster.env\n"
         remote += "install -m 0644 systemd/xfi-guard-cluster-agent.service /etc/systemd/system/xfi-guard-cluster-agent.service\n"
     remote += r'''
@@ -99,7 +115,7 @@ sleep 3
 cluster_state="$(systemctl is-active xfi-guard-cluster-agent.service || true)"
 '''
     else:
-        remote += "cluster_state=disabled\n"
+        remote += "cluster_state=not-configured\n"
     remote += r'''sleep 2
 xfi_state="$(systemctl is-active xfi-guard.service || true)"
 f2b_state="$(systemctl is-active fail2ban.service || true)"
