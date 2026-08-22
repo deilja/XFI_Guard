@@ -55,6 +55,7 @@ def _buttons() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="cluster:refresh")],
         [InlineKeyboardButton(text="🌐 Глобальные блокировки", callback_data="cluster:blocks")],
+        [InlineKeyboardButton(text="⬅️ Главное меню", callback_data="cluster:menu")],
     ])
 
 
@@ -96,8 +97,7 @@ def cluster_view() -> str:
     try:
         health = _get("/health")
         nodes = _get("/nodes")
-        node_items = nodes.get("nodes", [])
-        summary = cluster_summary(node_items)
+        summary = cluster_summary(nodes.get("nodes", []))
         blocks = _live_blocks()
         master_icon = "🟢" if health.get("ok") else "🔴"
         cluster_icon = {"online": "🟢", "degraded": "🟡", "offline": "🔴"}.get(summary["status"], "⚪")
@@ -157,7 +157,7 @@ def install_cluster_handlers(dp, admin_ids: set[int], main_kb):
     def allowed(message) -> bool:
         return bool(message.from_user and message.from_user.id in admin_ids)
 
-    @dp.message(F.text == "🌐 Cluster Center")
+    @dp.message(F.text.in_({"🌐 Кластер", "🌐 Cluster Center"}))
     async def cluster_button(message):
         if allowed(message):
             await message.answer(cluster_view(), reply_markup=_buttons())
@@ -183,3 +183,14 @@ def install_cluster_handlers(dp, admin_ids: set[int], main_kb):
         except Exception:
             pass
         await callback.answer("Глобальные блокировки")
+
+    @dp.callback_query(F.data == "cluster:menu")
+    async def cluster_menu(callback):
+        if not callback.from_user or callback.from_user.id not in admin_ids:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        try:
+            await callback.message.edit_text("🏠 Главное меню\n\nВыберите раздел в нижнем меню.")
+        except Exception:
+            pass
+        await callback.answer()
