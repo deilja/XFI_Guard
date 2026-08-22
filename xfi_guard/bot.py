@@ -5,17 +5,16 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from .ai_ui import install_ai_handlers
-from .ai_center import install_ai_center_handlers, ai_center_menu
+from .ai_center import install_ai_center_handlers
 from .ai_model_manager import install_ai_model_manager
 from .ai_keys_ui import install_ai_key_handlers
 from .openrouter_ui import install_openrouter_handlers
 from .xui_ui import install_xui_handlers
 from .alert_callbacks import register_alert_callbacks
-from .attack_surface import collect_attack_surface
 from .checks import collect_basic_checks
-from .defense_ui import install_defense_handlers, defense_menu
+from .defense_ui import install_defense_handlers
 from .firewall import list_blocked_ips
 from .rate_limit import RateLimitMiddleware
 from .security import collect_security_checks
@@ -27,7 +26,15 @@ from .cluster_ui import install_cluster_handlers
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS","🌐 Кластер"],["🚫 Блокировки","📋 События","⚙️ 3X-UI"],["🔄 Проверка","🔄 Обновить","❓ Помощь"]])
+
+def main_kb():
+    return kb([
+        ["📊 Статус","🛡 Защита","🌐 VPN/Xray"],
+        ["🤖 AI","🖥 VPS","🌐 Кластер"],
+        ["🚫 Блокировки","📋 События","⚙️ 3X-UI"],
+        ["🔄 Проверка","🔄 Обновить","❓ Помощь"],
+    ])
+
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def blocked_view():
     try:
@@ -40,7 +47,10 @@ def blocked_view():
 
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
-    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb)
+    register_alert_callbacks(dp,ADMIN_IDS)
+    install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
+    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb)
+
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
@@ -57,21 +67,12 @@ def build_dispatcher():
         await message.answer(await vps_view(),reply_markup=main_kb())
     @dp.message(F.text=="📊 Статус")
     async def status_button(message): await status_command(message)
-    @dp.message(F.text=="🛡 Защита")
-    async def protection_button(message):
-        if admin(message): await message.answer("🛡 ЗАЩИТА\n\nУправление Fail2Ban, UFW и ручными блокировками.",reply_markup=defense_menu())
-    @dp.message(F.text=="🔐 Безопасность")
-    async def security_button(message):
-        if admin(message): await message.answer("🔐 Безопасность\n\n"+results(collect_security_checks()),reply_markup=main_kb())
     @dp.message(F.text=="🌐 VPN/Xray")
     async def vpn_button(message):
         if admin(message): await message.answer("🌐 VPN/Xray\n\n"+results(collect_vpn_checks()),reply_markup=main_kb())
     @dp.message(F.text.in_({"🖥 VPS","🖥 VPS узлы"}))
     async def vps_button(message):
         if admin(message): await message.answer(await vps_view(),reply_markup=main_kb())
-    @dp.message(F.text.in_({"🌐 Кластер","🌐 Cluster Center"}))
-    async def cluster_button(message):
-        if admin(message): await message.answer(__import__("xfi_guard.cluster_ui",fromlist=["cluster_view"]).cluster_view(),reply_markup=main_kb())
     @dp.message(F.text=="🚫 Блокировки")
     async def blocks_button(message):
         if admin(message): await message.answer(blocked_view()+"\n\nДля ручного управления откройте «🛡 Защита».",reply_markup=main_kb())
@@ -84,9 +85,6 @@ def build_dispatcher():
     @dp.message(F.text=="🤖 AI")
     async def ai_button(message):
         if admin(message): await message.answer("🤖 AI ЦЕНТР\n\nЕдиный консилиум Gemini + Groq + OpenRouter + RouterAI.",reply_markup=ai_center_menu())
-    @dp.message(F.text=="⚙️ 3X-UI")
-    async def xui_button(message):
-        if admin(message): await message.answer("⚙️ 3X-UI\n\nУправление API-подключениями 3X-UI.",reply_markup=__import__("xfi_guard.xui_ui",fromlist=["xui_menu"]).xui_menu())
     @dp.message(F.text=="🔄 Проверка")
     async def check_button(message): await status_command(message)
     @dp.message(F.text=="🔄 Обновить")
