@@ -16,8 +16,7 @@ install -d -m 0750 "$ENV_DIR" "$STATE_DIR"
 if [[ ! -f "$ENV_FILE" ]]; then
   install -m 0600 /dev/null "$ENV_FILE"
   cat > "$ENV_FILE" <<'EOF'
-# Cluster Master must be reachable by remote XFI Guard nodes.
-# Restrict TCP/8765 with firewall/VPN to trusted cluster peers.
+# Cluster Master bind. Protect TCP/8765 with firewall/VPN to trusted peers.
 XFI_GUARD_CLUSTER_HOST=0.0.0.0
 XFI_GUARD_CLUSTER_PORT=8765
 XFI_GUARD_CLUSTER_TOKEN=
@@ -70,3 +69,8 @@ ss -lntp 2>/dev/null | grep -E ":${XFI_GUARD_CLUSTER_PORT}\b" || {
 
 echo "Cluster Master installed: xfi-guard-multi-vps-master.service"
 echo "Configuration: $ENV_FILE"
+echo "Firewall: allow TCP/${XFI_GUARD_CLUSTER_PORT} only from trusted cluster peers."
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+  echo "UFW is active; no broad allow rule was added automatically."
+  echo "Add a peer-specific rule, for example: ufw allow from <NODE_IP> to any port ${XFI_GUARD_CLUSTER_PORT} proto tcp"
+fi
