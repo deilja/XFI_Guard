@@ -1,13 +1,12 @@
 """Telegram FSM for multi-VPS administration."""
 from __future__ import annotations
-import asyncio
-import ipaddress
-import re
+import asyncio, ipaddress, re
+from pathlib import Path
 from aiogram import F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
-from .nodes import collect_nodes, enroll_host_key, host_key_fingerprint, Node
+from .nodes import collect_nodes, enroll_host_key, host_key_fingerprint, Node, DEFAULT_IDENTITY_FILE
 from .nodes_manager import add_node, list_configured_nodes, remove_node
 from .node_bootstrap import bootstrap
 from .password_bootstrap import bootstrap_with_password
@@ -17,31 +16,19 @@ class NodeForm(StatesGroup):
 
 def _menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="➕ Добавить VPS"),KeyboardButton(text="🔐 Добавить по паролю")],[KeyboardButton(text="🗑 Удалить VPS")],[KeyboardButton(text="🔌 Подключить XFI Guard")],[KeyboardButton(text="🔄 Проверить VPS"),KeyboardButton(text="⬅️ Главное меню")]],resize_keyboard=True,is_persistent=True)
 def _key_menu(): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Доверять ключу")],[KeyboardButton(text="❌ Отмена")]],resize_keyboard=True,is_persistent=True)
-
 def _normalize_host(value: str) -> tuple[str, int | None]:
-    """Accept plain host/IP and common host:port input without storing :port in host."""
-    value = value.strip()
-    if not value:
-        return "", None
-    # [IPv6]:port
-    m = re.fullmatch(r"\[([^\]]+)\]:(\d{1,5})", value)
-    if m:
-        return m.group(1), int(m.group(2))
-    # IPv4/DNS:port. A raw IPv6 address contains multiple ':' and is left intact.
-    if value.count(":") == 1:
-        host, port = value.rsplit(":", 1)
-        if port.isdigit():
-            return host, int(port)
-    return value, None
-
-def _valid_host(value: str) -> bool:
-    if len(value) > 253 or any(c in value for c in " /\\\t\r\n"):
-        return False
-    try:
-        ipaddress.ip_address(value)
-        return True
-    except ValueError:
-        return bool(re.fullmatch(r"[A-Za-z0-9_.:-]+", value))
+    value=value.strip()
+    if not value: return "",None
+    m=re.fullmatch(r"\[([^\]]+)\]:(\d{1,5})",value)
+    if m: return m.group(1),int(m.group(2))
+    if value.count(":")==1:
+        host,port=value.rsplit(":",1)
+        if port.isdigit(): return host,int(port)
+    return value,None
+def _valid_host(value: str)->bool:
+    if len(value)>253 or any(c in value for c in " /\\\t\r\n"): return False
+    try: ipaddress.ip_address(value); return True
+    except ValueError: return bool(re.fullmatch(r"[A-Za-z0-9_.:-]+",value))
 
 def install_node_handlers(dp,admin_ids:set[int]):
     def ok(m): return bool(m.from_user and m.from_user.id in admin_ids)
@@ -77,10 +64,7 @@ def install_node_handlers(dp,admin_ids:set[int]):
         if not ok(m): return
         raw=(m.text or "").strip(); host,embedded_port=_normalize_host(raw)
         if not host or not _valid_host(host): return await m.answer("❌ Некорректный IP/DNS. Пример: 2.27.37.78 или vps.example.com:22")
-        data=await state.get_data()
-        await state.update_data(host=host, embedded_port=embedded_port)
-        await state.set_state(NodeForm.user)
-        await m.answer("Введите SSH пользователя (по умолчанию root):")
+        await state.update_data(host=host,embedded_port=embedded_port); await state.set_state(NodeForm.user); await m.answer("Введите SSH пользователя (по умолчанию root):")
     @dp.message(NodeForm.user)
     async def node_user(m,state:FSMContext):
         if not ok(m): return
@@ -108,10 +92,10 @@ def install_node_handlers(dp,admin_ids:set[int]):
         data=await state.get_data(); node=Node(name=data["name"],host=data["host"],user=data.get("user","root"),port=int(data["port"])); good,result=await asyncio.to_thread(enroll_host_key,node)
         if not good: await state.clear(); return await m.answer(f"❌ known_hosts: {result}",reply_markup=_menu())
         if data.get("password_mode"):
-            await state.set_state(NodeForm.password)
-            return await m.answer("🔑 Введите SSH пароль VPS.\n\nПароль используется только для первичного подключения и не сохраняется.",reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]],resize_keyboard=True,is_persistent=True))
-        try: await asyncio.to_thread(add_node,node.name,node.host,node.user,node.port); await state.clear(); await m.answer(f"✅ VPS добавлен.\n{node.user}@{node.host}:{node.port}",reply_markup=_menu())
-        except Exception as e: await state.clear(); await m.answer(f"❌ {type(e).__name__}: {e}",reply_markup=_menu())
+            await state.set_state(NodeForm.password); return await m.answer("🔑 Введите SSH пароль VPS.\n\nПароль используется только для первичного подключения и не сохраняется.",reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]],resize_keyboard=True,is_persistent=True))
+        try: await asyncio.to_thread(add_node,node.name,node.host,node.user,node.port)
+        except Exception as e: await state.clear(); await m.answer(f"❌ {type(e).__name__}: {e}",reply_markup=_menu()); return
+        await state.clear(); await m.answer(f"✅ VPS добавлен.\n{node.user}@{node.host}:{node.port}",reply_markup=_menu())
     @dp.message(NodeForm.password)
     async def password(m,state:FSMContext):
         if not ok(m): return
@@ -127,7 +111,8 @@ def install_node_handlers(dp,admin_ids:set[int]):
         try: good,out=await asyncio.to_thread(bootstrap_with_password,node.host,node.user,node.port,password)
         finally: password=""
         if not good: return await m.answer(f"❌ SSH подключение не выполнено:\n{out}",reply_markup=_menu())
-        try: await asyncio.to_thread(add_node,node.name,node.host,node.user,node.port)
+        identity=str(DEFAULT_IDENTITY_FILE)
+        try: await asyncio.to_thread(add_node,node.name,node.host,node.user,node.port,identity)
         except Exception as e: return await m.answer(f"❌ SSH успешен, но узел не сохранён: {type(e).__name__}: {e}",reply_markup=_menu())
         await m.answer(f"✅ VPS подключён\n\n{node.name}\nSSH: {node.user}@{node.host}:{node.port}\n\n🔑 SSH-ключ установлен.\n🔒 Пароль не сохранён.",reply_markup=_menu())
     @dp.message(F.text=="🔌 Подключить XFI Guard")
@@ -137,7 +122,8 @@ def install_node_handlers(dp,admin_ids:set[int]):
         if not ns: return await m.answer("Сначала добавьте VPS.",reply_markup=_menu())
         await m.answer("⏳ Проверяю XFI Guard на настроенных VPS...")
         for n in ns:
-            try: good,out=await asyncio.to_thread(bootstrap,n.get("host",""),n.get("user","root"),int(n.get("port",22)))
+            identity=n.get("identity_file") or str(DEFAULT_IDENTITY_FILE)
+            try: good,out=await asyncio.to_thread(bootstrap,n.get("host",""),n.get("user","root"),int(n.get("port",22)),30,identity)
             except Exception as e: good,out=False,f"{type(e).__name__}: {e}"
             await m.answer(("🟢" if good else "🔴")+f" {n.get('name')}\n\n{out[-1800:]}")
     @dp.message(F.text=="🔄 Проверить VPS")
