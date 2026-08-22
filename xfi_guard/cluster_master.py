@@ -67,6 +67,10 @@ def _node_secret(node: str) -> str:
     return os.getenv(f"XFI_GUARD_NODE_SECRET_{node}", "") or os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
 
 
+def _configured() -> bool:
+    return bool(os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip() and os.getenv("XFI_GUARD_CLUSTER_SECRET", "").strip())
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -78,10 +82,20 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode())
 
     def _auth(self):
-        expected = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "")
-        return not expected or self.headers.get("Authorization", "") == f"Bearer {expected}"
+        expected = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip()
+        if not expected:
+            return False
+        return self.headers.get("Authorization", "") == f"Bearer {expected}"
+
+    def _require_configured(self):
+        if not _configured():
+            _json(self, 503, {"error": "cluster authentication is not configured"})
+            return False
+        return True
 
     def do_POST(self):
+        if not self._require_configured():
+            return
         if not self._auth():
             return _json(self, 401, {"error": "unauthorized"})
         try:
@@ -117,8 +131,6 @@ class Handler(BaseHTTPRequestHandler):
 
             if self.path == "/threat":
                 secret = os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
-                if not secret:
-                    raise ValueError("master secret is not configured")
                 signature = str(payload.get("signature", ""))
                 signed_payload = dict(payload)
                 signed_payload.pop("signature", None)
@@ -160,6 +172,8 @@ class Handler(BaseHTTPRequestHandler):
             return _json(self, 400, {"error": str(exc)})
 
     def do_GET(self):
+        if not self._require_configured():
+            return
         if not self._auth():
             return _json(self, 401, {"error": "unauthorized"})
         now = time.time()
