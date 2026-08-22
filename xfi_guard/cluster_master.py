@@ -1,4 +1,4 @@
-"""Persistent, idempotent HTTP master for XFI Guard Multi-VPS synchronization."""
+"""Persistent, authenticated HTTP master for XFI Guard Multi-VPS synchronization."""
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .cluster import accept_event
+from .cluster_auth import verify_heartbeat
 from .cluster_notify import notify_global_block_sync
 from .cluster_policy import evaluate
 from .threat_intel import active
@@ -19,6 +20,7 @@ NODES: dict[str, dict] = {}
 COMMANDS: dict[str, list[dict]] = {}
 BLOCKS: dict[str, dict] = {}
 LOCK = threading.RLock()
+HEARTBEAT_TTL = 90
 
 
 def _load():
@@ -42,6 +44,7 @@ def _json(handler, code: int, payload: dict):
     body = json.dumps(payload, ensure_ascii=False).encode()
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json")
+    handler.send_header("Cache-Control", "no-store")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
@@ -57,6 +60,11 @@ def _prune_expired(now: float | None = None):
     for ip in expired:
         BLOCKS.pop(ip, None)
     return expired
+
+
+def _node_secret(node: str) -> str:
+    """Per-node secret, falling back to the cluster secret for legacy nodes."""
+    return os.getenv(f"XFI_GUARD_NODE_SECRET_{node}", "") or os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -80,14 +88,22 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._body()
             if self.path == "/heartbeat":
                 node = str(payload.get("node", ""))[:128]
+                signature = str(payload.pop("signature", ""))
                 if not node:
                     raise ValueError("missing node")
+                secret = _node_secret(node)
+                if not secret or not verify_heartbeat(payload, signature, secret):
+                    return _json(self, 401, {"error": "invalid node heartbeat"})
                 now = time.time()
                 with LOCK:
+                    previous = NODES.get(node, {})
                     NODES[node] = {
+                        **previous,
+                        "node_id": str(payload.get("node_id", previous.get("node_id", "")))[:128],
                         "last_seen": now,
                         "status": "online",
-                        "blocked": payload.get("blocked", [])[:500],
+                        "hostname": str(payload.get("hostname", ""))[:255],
+                        "blocked": [x for x in payload.get("blocked", []) if isinstance(x, str)][:500],
                     }
                     commands = [c for c in COMMANDS.get(node, []) if float(c.get("until", 0)) > now]
                     COMMANDS[node] = []
@@ -97,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
                             b.setdefault("nodes", {})[node] = "queued"
                     _prune_expired(now)
                     _save()
-                return _json(self, 200, {"ok": True, "commands": commands})
+                return _json(self, 200, {"ok": True, "commands": commands, "server_time": now})
 
             if self.path == "/threat":
                 secret = os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
@@ -108,21 +124,13 @@ class Handler(BaseHTTPRequestHandler):
                 signed_payload.pop("signature", None)
                 item = accept_event(signed_payload, signature, secret)
                 source_node = str(signed_payload.get("node", "unknown"))
-                decision = evaluate(
-                    item.get("score", 0),
-                    item.get("risk", "low"),
-                    len(item.get("origin_nodes", [])),
-                    require_two_nodes=False,
-                )
+                decision = evaluate(item.get("score", 0), item.get("risk", "low"), len(item.get("origin_nodes", [])), require_two_nodes=False)
                 blocked_nodes = []
                 if decision.allowed:
                     until = time.time() + 604800
                     cid = _command_id(item["ip"], until)
                     with LOCK:
-                        block = BLOCKS.setdefault(
-                            item["ip"],
-                            {"command_id": cid, "until": until, "source_node": source_node, "nodes": {}},
-                        )
+                        block = BLOCKS.setdefault(item["ip"], {"command_id": cid, "until": until, "source_node": source_node, "nodes": {}})
                         block["until"] = max(float(block.get("until", 0)), until)
                         block["command_id"] = cid
                         block["source_node"] = source_node
@@ -131,38 +139,22 @@ class Handler(BaseHTTPRequestHandler):
                         block["confidence"] = signed_payload.get("confidence", "-")
                         block["providers"] = signed_payload.get("providers", "-")
                         for node, state in NODES.items():
-                            if time.time() - state["last_seen"] <= 90 and node != source_node:
+                            if time.time() - state["last_seen"] <= HEARTBEAT_TTL and node != source_node:
                                 if state.get("blocked") and item["ip"] in state["blocked"]:
                                     block["nodes"][node] = "blocked"
                                     continue
                                 if not any(c.get("command_id") == cid for c in COMMANDS.setdefault(node, [])):
-                                    COMMANDS[node].append({
-                                        "action": "block",
-                                        "ip": item["ip"],
-                                        "until": until,
-                                        "source_node": source_node,
-                                        "command_id": cid,
-                                    })
+                                    COMMANDS[node].append({"action": "block", "ip": item["ip"], "until": until, "source_node": source_node, "command_id": cid})
                                 block["nodes"][node] = "queued"
                                 blocked_nodes.append(node)
                         _save()
                     event = dict(item)
-                    event.update({
-                        "source_node": source_node,
-                        "until": until,
-                        "confidence": signed_payload.get("confidence", "-"),
-                        "providers": signed_payload.get("providers", "-"),
-                    })
+                    event.update({"source_node": source_node, "until": until, "confidence": signed_payload.get("confidence", "-"), "providers": signed_payload.get("providers", "-")})
                     try:
                         notify_global_block_sync(event, blocked_nodes)
                     except Exception:
                         pass
-                return _json(self, 200, {
-                    "ok": True,
-                    "threat": item,
-                    "global_block": decision.allowed,
-                    "blocked_nodes": blocked_nodes,
-                })
+                return _json(self, 200, {"ok": True, "threat": item, "global_block": decision.allowed, "blocked_nodes": blocked_nodes})
             return _json(self, 404, {"error": "not found"})
         except Exception as exc:
             return _json(self, 400, {"error": str(exc)})
@@ -174,28 +166,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             with LOCK:
                 _prune_expired(now)
-                online = sum(1 for n in NODES.values() if now - n["last_seen"] <= 90)
-                return _json(self, 200, {
-                    "ok": True,
-                    "nodes": len(NODES),
-                    "online": online,
-                    "threats": len(active(500)),
-                    "blocks": len(BLOCKS),
-                })
+                online = sum(1 for n in NODES.values() if now - n["last_seen"] <= HEARTBEAT_TTL)
+                return _json(self, 200, {"ok": True, "nodes": len(NODES), "online": online, "threats": len(active(500)), "blocks": len(BLOCKS)})
         if self.path == "/nodes":
             with LOCK:
-                return _json(self, 200, {
-                    "nodes": [
-                        {"name": n, **s, "online": now - s["last_seen"] <= 90}
-                        for n, s in NODES.items()
-                    ]
-                })
+                return _json(self, 200, {"nodes": [{"name": n, **s, "online": now - s["last_seen"] <= HEARTBEAT_TTL} for n, s in NODES.items()]})
         if self.path == "/blocks":
             with LOCK:
                 _prune_expired(now)
-                items = []
-                for ip, item in BLOCKS.items():
-                    items.append({"ip": ip, **item})
+                items = [{"ip": ip, **item} for ip, item in BLOCKS.items()]
                 items.sort(key=lambda x: float(x.get("until", 0)), reverse=True)
                 return _json(self, 200, {"blocks": items[:500], "total": len(items)})
         if self.path.startswith("/block/"):
