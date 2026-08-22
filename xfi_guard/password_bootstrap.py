@@ -2,7 +2,8 @@
 
 The password is supplied only in memory via SSHPASS. It is never written to
 config.toml, logs, command arguments, or the node database. After the first
-successful login an ed25519 key is installed for future use.
+successful login an ed25519 key is installed and the remote security stack is
+provisioned automatically through that key.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 
-def bootstrap_with_password(host: str, user: str, port: int, password: str, timeout: int = 30) -> tuple[bool, str]:
+def bootstrap_with_password(host: str, user: str, port: int, password: str, timeout: int = 60) -> tuple[bool, str]:
     if not password:
         return False, "SSH пароль пустой"
     if not shutil.which("sshpass"):
@@ -37,7 +38,7 @@ def bootstrap_with_password(host: str, user: str, port: int, password: str, time
     env["SSHPASS"] = password
     target = f"{user}@{host}"
     ssh_options = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", "-p", str(port)]
-    remote = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && cat >> ~/.ssh/authorized_keys"
+    remote = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && grep -qxF -f /dev/stdin ~/.ssh/authorized_keys || cat >> ~/.ssh/authorized_keys"
     try:
         with pub.open("r", encoding="utf-8") as fh:
             command = ["sshpass", "-e", "ssh", *ssh_options, target, remote]
@@ -52,8 +53,16 @@ def bootstrap_with_password(host: str, user: str, port: int, password: str, time
         verify = subprocess.run(test, text=True, capture_output=True, timeout=timeout, check=False)
         if verify.returncode != 0:
             return False, (verify.stderr or "SSH key verification failed")[-1200:]
-        return True, "SSH ключ установлен. Пароль больше не требуется."
+
+        # Password is no longer needed. Continue exclusively through the key
+        # and automatically install/repair XFI Guard + Fail2Ban + UFW package.
+        from .node_bootstrap import bootstrap
+        ok, result = bootstrap(host, user, port, timeout, str(key))
+        if not ok:
+            return False, "SSH ключ установлен, но автоматическая настройка защиты не завершена:\n" + result[-2400:]
+        return True, "SSH ключ установлен. Пароль не сохранён.\n\nАвтоматически настроено:\n" + result[-2400:]
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
     finally:
         env["SSHPASS"] = ""
+        password = ""
