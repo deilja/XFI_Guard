@@ -11,6 +11,8 @@ from pathlib import Path
 from aiogram import F
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from .cluster_status import cluster_summary
+
 STATE_PATH = Path(os.getenv("XFI_GUARD_CLUSTER_STATE", "/var/lib/xfi-guard/cluster-state.json"))
 DEFAULT_MASTER_URL = "http://127.0.0.1:8765"
 
@@ -44,7 +46,7 @@ def _master_diagnostic(exc: Exception) -> str:
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         with socket.create_connection((host, port), timeout=2):
             tcp = "TCP: доступен"
-        return f"URL: {url}\n{tcp}, но HTTP-запрос завершился ошибкой: {type(exc).__name__}: {exc}"
+        return f"URL: {url}\n{tcp}, HTTP: {type(exc).__name__}: {exc}"
     except Exception as probe_exc:
         return f"URL: {url}\nTCP: недоступен ({type(probe_exc).__name__}: {probe_exc})"
 
@@ -58,8 +60,7 @@ def _buttons() -> InlineKeyboardMarkup:
 
 def _state_blocks() -> dict:
     try:
-        data = json.loads(STATE_PATH.read_text())
-        return data.get("blocks", {})
+        return json.loads(STATE_PATH.read_text()).get("blocks", {})
     except (FileNotFoundError, OSError, ValueError):
         return {}
 
@@ -68,19 +69,25 @@ def _format_nodes(data: dict) -> str:
     nodes = data.get("nodes", [])
     if not nodes:
         return "• узлы ещё не зарегистрированы"
+    summary = cluster_summary(nodes)
     lines = []
     for node in nodes:
-        icon = "🟢" if node.get("online") else "🔴"
-        lines.append(f"{icon} {node.get('name', '-')} — {'ONLINE' if node.get('online') else 'OFFLINE'}")
-        blocked = node.get("blocked", [])
-        lines.append(f"   🔒 Блокировок: {len(blocked)}")
+        status = node.get("status", "offline")
+        icon = {"online": "🟢", "degraded": "🟡", "offline": "🔴"}.get(status, "⚪")
+        name = node.get("name") or node.get("hostname") or "-"
+        reason = node.get("status_reason", "-")
+        blocked = len(node.get("blocked", []))
+        lines.append(f"{icon} {name} — {status.upper()}")
+        lines.append(f"   heartbeat: {reason} | 🔒 {blocked}")
+    counts = summary["counts"]
+    lines.append("")
+    lines.append(f"Итого: 🟢 {counts['online']}  🟡 {counts['degraded']}  🔴 {counts['offline']}")
     return "\n".join(lines)
 
 
 def _live_blocks() -> list[dict]:
     try:
-        data = _get("/blocks")
-        return list(data.get("blocks", []))
+        return list(_get("/blocks").get("blocks", []))
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return [{"ip": ip, **item} for ip, item in _state_blocks().items()]
 
@@ -89,25 +96,29 @@ def cluster_view() -> str:
     try:
         health = _get("/health")
         nodes = _get("/nodes")
-        total = int(health.get("nodes", 0))
-        online = int(health.get("online", 0))
-        threats = int(health.get("threats", 0))
+        node_items = nodes.get("nodes", [])
+        summary = cluster_summary(node_items)
         blocks = _live_blocks()
+        master_icon = "🟢" if health.get("ok") else "🔴"
+        cluster_icon = {"online": "🟢", "degraded": "🟡", "offline": "🔴"}.get(summary["status"], "⚪")
         return (
             "🌐 XFI GUARD • CLUSTER CENTER\n\n"
-            f"🟢 Cluster Master: ONLINE\n"
-            f"🔗 URL: {_master_url()}\n"
-            f"🖥 Узлы: {online}/{total} онлайн\n"
-            f"🚨 Активные угрозы: {threats}\n"
-            f"🔒 Глобальные IP: {len(blocks)}\n"
-            "⏱ Срок автоблокировки: 7 дней\n\n"
+            f"{master_icon} Cluster Master: ONLINE\n"
+            f"{cluster_icon} Cluster: {summary['status'].upper()}\n"
+            f"🔗 {_master_url()}\n\n"
+            f"🖥 Узлы: {summary['total']}\n"
+            f"🟢 Online: {summary['counts']['online']}\n"
+            f"🟡 Degraded: {summary['counts']['degraded']}\n"
+            f"🔴 Offline: {summary['counts']['offline']}\n"
+            f"🚨 Активные угрозы: {int(health.get('threats', 0))}\n"
+            f"🔒 Глобальные IP: {len(blocks)}\n\n"
             "🖥 СОСТОЯНИЕ УЗЛОВ\n"
             f"{_format_nodes(nodes)}\n\n"
             "🛡 Политика\n"
             "• AI high-confidence → авто-блок\n"
             "• Fail2Ban → 7 дней\n"
             "• Global sync → включена\n"
-            "• Пароли VPS → не хранятся"
+            "• Heartbeat TTL: 90s"
         )
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         return (
@@ -115,10 +126,10 @@ def cluster_view() -> str:
             "🔴 Cluster Master недоступен.\n\n"
             f"{_master_diagnostic(exc)}\n\n"
             "Проверьте:\n"
-            "• запущен ли xfi-guard-multi-vps-master.service;\n"
-            "• слушает ли Cluster Master нужный порт;\n"
-            "• XFI_GUARD_CLUSTER_MASTER_URL;\n"
-            "• XFI_GUARD_CLUSTER_TOKEN (если включена авторизация)."
+            "• xfi-guard-multi-vps-master.service\n"
+            "• XFI_GUARD_CLUSTER_MASTER_URL\n"
+            "• порт 8765\n"
+            "• XFI_GUARD_CLUSTER_TOKEN"
         )
 
 
@@ -128,15 +139,15 @@ def blocks_view() -> str:
         return "🌐 ГЛОБАЛЬНЫЕ БЛОКИРОВКИ\n\nАктивных глобальных блокировок нет."
     lines = ["🌐 ГЛОБАЛЬНЫЕ БЛОКИРОВКИ", "", f"Всего: {len(blocks)}", ""]
     for item in blocks[:40]:
-        ip = item.get("ip", "-")
         nodes = item.get("nodes", {}) or {}
         applied = sum(1 for state in nodes.values() if state == "blocked")
         queued = sum(1 for state in nodes.values() if state == "queued")
-        source = item.get("source_node", "-")
-        lines.append(f"🚫 {ip}")
-        lines.append(f"   Источник: {source}")
-        lines.append(f"   VPS: {applied} / {queued} в очереди")
-        lines.append(f"   До: {item.get('until', '-')}")
+        lines += [
+            f"🚫 {item.get('ip', '-')}",
+            f"   Источник: {item.get('source_node', '-')}",
+            f"   VPS: {applied} применено / {queued} в очереди",
+            f"   До: {item.get('until', '-')}",
+        ]
     if len(blocks) > 40:
         lines.append(f"… ещё {len(blocks)-40}")
     return "\n".join(lines)[:3900]
@@ -148,9 +159,8 @@ def install_cluster_handlers(dp, admin_ids: set[int], main_kb):
 
     @dp.message(F.text == "🌐 Cluster Center")
     async def cluster_button(message):
-        if not allowed(message):
-            return
-        await message.answer(cluster_view(), reply_markup=_buttons())
+        if allowed(message):
+            await message.answer(cluster_view(), reply_markup=_buttons())
 
     @dp.callback_query(F.data == "cluster:refresh")
     async def cluster_refresh(callback):
