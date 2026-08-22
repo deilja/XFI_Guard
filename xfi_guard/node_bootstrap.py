@@ -6,45 +6,135 @@ import subprocess
 from pathlib import Path
 
 
-def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 30, identity_file: str | None = None) -> tuple[bool, str]:
-    """Install/repair XFI Guard on a trusted node using its configured identity."""
+def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60, identity_file: str | None = None) -> tuple[bool, str]:
+    """Install/repair XFI Guard and its protection stack on a trusted VPS.
+
+    The remote installer is idempotent. It installs missing prerequisites,
+    Fail2Ban and UFW packages, deploys XFI Guard, and enables the dedicated
+    seven-day xfi-guard jail. UFW is never enabled blindly: an existing active
+    firewall is preserved and an inactive firewall is left disabled to avoid
+    locking the administrator out of unknown VPN/panel ports.
+    """
     if not host or any(c.isspace() for c in host):
         return False, "invalid host"
+    if not 1 <= int(port) <= 65535:
+        return False, "invalid port"
     target = f"{user}@{host}"
-    remote = r'''set -eu
-command -v systemctl >/dev/null
-command -v fail2ban-client >/dev/null || { echo FAIL2BAN_MISSING; exit 20; }
-if [ -d /opt/xfi-guard/.git ]; then
-  cd /opt/xfi-guard
-  git pull --ff-only origin main
+    remote = r'''set -Eeuo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -qq
+  apt-get install -y -qq git ca-certificates python3 python3-venv python3-pip fail2ban ufw
+elif command -v dnf >/dev/null 2>&1; then
+  dnf install -y git ca-certificates python3 python3-pip fail2ban firewalld
+elif command -v yum >/dev/null 2>&1; then
+  yum install -y git ca-certificates python3 python3-pip fail2ban
 else
-  echo XFI_GUARD_NOT_INSTALLED
-  exit 21
+  echo 'UNSUPPORTED_PACKAGE_MANAGER'
+  exit 30
 fi
-systemctl enable --now xfi-guard.service
-systemctl enable --now xfi-guard-bot.service 2>/dev/null || true
+
+INSTALL_DIR=/opt/xfi-guard
+mkdir -p /var/log/xfi-guard /var/lib/xfi-guard /etc/xfi-guard
+chmod 0755 /var/log/xfi-guard
+chmod 0700 /var/lib/xfi-guard /etc/xfi-guard
+
+if [ -d "$INSTALL_DIR/.git" ]; then
+  git -C "$INSTALL_DIR" fetch --all --prune
+  git -C "$INSTALL_DIR" reset --hard origin/main
+else
+  rm -rf "$INSTALL_DIR"
+  git clone --depth 1 https://github.com/deilja/XFI_Guard.git "$INSTALL_DIR"
+fi
+
+cd "$INSTALL_DIR"
+python3 -m venv "$INSTALL_DIR/.venv"
+"$INSTALL_DIR/.venv/bin/python" -m pip install -q --upgrade pip
+"$INSTALL_DIR/.venv/bin/pip" install -q --upgrade .
+
+if [ ! -f "$INSTALL_DIR/config.toml" ]; then
+  cat >"$INSTALL_DIR/config.toml" <<'EOF'
+[monitor]
+interval_seconds = 60
+log_level = "INFO"
+output_file = "/var/log/xfi-guard/monitor.jsonl"
+state_file = "/var/lib/xfi-guard/state.json"
+[thresholds]
+disk_warning_percent = 85
+memory_warning_percent = 90
+[vpn]
+services = ["xray", "x-ui", "3x-ui"]
+ports = [22, 80, 443, 2053, 2083, 2087, 2096]
+[events]
+ssh_log = "/var/log/auth.log"
+fail2ban_log = "/var/log/fail2ban.log"
+max_events_per_cycle = 100
+[telegram]
+enabled = false
+cooldown_seconds = 300
+[ai]
+provider = "gemini"
+max_events_per_cycle = 10
+[auto_block]
+enabled = true
+confidence = 0.90
+min_attempts = 5
+db = "/var/lib/xfi-guard/security.db"
+EOF
+fi
+
+install -m 0644 config/fail2ban/filter.d/xfi-guard.conf /etc/fail2ban/filter.d/xfi-guard.conf
+install -m 0644 config/fail2ban/jail.d/xfi-guard.conf /etc/fail2ban/jail.d/xfi-guard.conf
+touch /var/log/xfi-guard/fail2ban-sync.log
+chmod 0640 /var/log/xfi-guard/fail2ban-sync.log
+
+ufw_state=inactive
+if command -v ufw >/dev/null 2>&1; then
+  ufw_state="$(ufw status | awk 'NR==1 {print tolower($2)}')"
+  if [ "$ufw_state" = active ]; then
+    ufw allow "${SSH_PORT:-22}/tcp" >/dev/null || true
+  fi
+fi
+
+install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
+systemctl daemon-reload
 systemctl enable --now fail2ban
+fail2ban-client reload >/dev/null 2>&1 || systemctl restart fail2ban
 fail2ban-client status xfi-guard >/dev/null
-printf 'XFI_GUARD_BOOTSTRAP_OK\n'
+systemctl enable --now xfi-guard.service
+sleep 2
+
+xfi_state="$(systemctl is-active xfi-guard.service || true)"
+f2b_state="$(systemctl is-active fail2ban.service || true)"
+jail_state="$(fail2ban-client status xfi-guard 2>/dev/null | awk '/Currently banned:/ {print $NF}' || true)"
+printf 'XFI_GUARD_PROVISION_OK\n'
+printf 'XFI_GUARD=%s\n' "$xfi_state"
+printf 'FAIL2BAN=%s\n' "$f2b_state"
+printf 'XFI_JAIL_BANNED=%s\n' "${jail_state:-0}"
+printf 'UFW=%s\n' "$ufw_state"
+printf 'SSH_PORT=%s\n' "${SSH_PORT:-22}"
+if [ "$ufw_state" = inactive ]; then
+  printf 'UFW_NOTE=installed_but_left_disabled_to_preserve_unknown_VPN_panel_ports\n'
+fi
 '''
     cmd = ["ssh"]
     if identity_file:
         identity = Path(os.path.expanduser(identity_file))
-        if not identity.exists():
+        if not identity.is_file():
             return False, f"SSH identity file not found: {identity}"
         cmd += ["-i", str(identity), "-o", "IdentitiesOnly=yes"]
     cmd += [
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=yes",
-        "-o", f"ConnectTimeout={int(timeout)}",
-        "-p", str(int(port)), target,
-        "bash", "-s",
+        "-o", f"ConnectTimeout={min(int(timeout), 60)}",
+        "-p", str(int(port)), target, "bash", "-s",
     ]
     try:
-        p = subprocess.run(cmd, input=remote, text=True, capture_output=True, timeout=timeout + 15)
+        p = subprocess.run(cmd, input=remote, text=True, capture_output=True, timeout=int(timeout) + 20, check=False)
     except Exception as exc:
         return False, f"SSH error: {type(exc).__name__}: {exc}"
     output = (p.stdout + "\n" + p.stderr).strip()
     if p.returncode:
-        return False, output[-2500:]
-    return True, output[-2500:]
+        return False, output[-3000:]
+    return True, output[-3000:]
