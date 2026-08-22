@@ -1,4 +1,4 @@
-"""Read-only multi-VPS inventory and safe SSH host-key enrollment."""
+"""Multi-VPS inventory and safe SSH host-key enrollment."""
 from __future__ import annotations
 
 import ipaddress
@@ -67,11 +67,17 @@ def load_nodes(path: str | Path = "config.toml") -> list[Node]:
 
 
 def _ssh_base(node: Node) -> list[str]:
-    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=5", "-p", str(node.port)]
     identity = Path(os.path.expanduser(node.identity_file))
-    if identity.exists():
-        cmd[1:1] = ["-i", str(identity)]
-    return cmd + [f"{node.user}@{node.host}"]
+    cmd = [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "ConnectTimeout=8",
+    ]
+    if identity.is_file():
+        cmd += ["-i", str(identity)]
+    return cmd + ["-p", str(node.port), f"{node.user}@{node.host}"]
 
 
 def host_key_fingerprint(node: Node, timeout: int = 10) -> tuple[bool, str]:
@@ -82,8 +88,7 @@ def host_key_fingerprint(node: Node, timeout: int = 10) -> tuple[bool, str]:
         lines = [x.strip() for x in p.stdout.splitlines() if x.strip() and not x.startswith("#")]
         if p.returncode != 0 or not lines:
             return False, (p.stderr or "ssh-keyscan returned no key").strip()[:300]
-        key_line = lines[0]
-        fp = subprocess.run(["ssh-keygen", "-lf", "-", "-E", "sha256"], input=key_line + "\n", text=True, capture_output=True, timeout=5, check=False)
+        fp = subprocess.run(["ssh-keygen", "-lf", "-", "-E", "sha256"], input=lines[0] + "\n", text=True, capture_output=True, timeout=5, check=False)
         if fp.returncode != 0:
             return False, (fp.stderr or "ssh-keygen failed").strip()[:300]
         parts = fp.stdout.split()
@@ -125,7 +130,9 @@ def probe_node(node: Node, timeout: int = 8) -> dict:
     try:
         p = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
         if p.returncode != 0:
-            return {"name": node.name, "host": node.host, "status": "offline", "error": (p.stderr or "ssh failed").strip()[:300]}
+            identity = str(Path(os.path.expanduser(node.identity_file)))
+            err = (p.stderr or "ssh failed").strip()[:500]
+            return {"name": node.name, "host": node.host, "status": "offline", "error": f"{err} [identity={identity}]"}
         import json
         payload = json.loads(p.stdout.strip().splitlines()[-1])
         return {"name": node.name, "host": node.host, "status": "online", **payload}
