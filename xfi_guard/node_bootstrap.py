@@ -6,13 +6,7 @@ import subprocess
 from pathlib import Path
 
 
-def bootstrap(
-    host: str,
-    user: str = "root",
-    port: int = 22,
-    timeout: int = 30,
-    identity_file: str | None = None,
-) -> tuple[bool, str]:
+def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 30, identity_file: str | None = None) -> tuple[bool, str]:
     """Install/repair XFI Guard on a trusted node using its configured identity."""
     if not host or any(c.isspace() for c in host):
         return False, "invalid host"
@@ -38,16 +32,9 @@ printf 'XFI_GUARD_BOOTSTRAP_OK\n'
         identity = Path(os.path.expanduser(identity_file))
         if not identity.exists():
             return False, f"SSH identity file not found: {identity}"
-        cmd += ["-i", str(identity)]
+        cmd += ["-i", str(identity), "-o", "IdentitiesOnly=yes"]
     cmd += [
         "-o", "BatchMode=yes",
-        "-o", "IdentitiesOnly=yes" if identity_file else "-o",
-    ]
-    if identity_file:
-        # Replace the compact pair above with the actual SSH option/value.
-        cmd = ["ssh", "-i", str(Path(os.path.expanduser(identity_file))),
-               "-o", "IdentitiesOnly=yes"]
-    cmd += [
         "-o", "StrictHostKeyChecking=yes",
         "-o", f"ConnectTimeout={int(timeout)}",
         "-p", str(int(port)), target,
