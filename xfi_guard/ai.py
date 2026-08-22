@@ -47,7 +47,9 @@ class AIAnalyzer:
         self.openrouter_models = [str(x).strip() for x in raw if str(x).strip()]
         self.routerai_key = cfg.get("routerai_key") or os.getenv("ROUTERAI_API_KEY") or ""
         self.routerai_enabled = bool(cfg.get("routerai_enabled", False))
-        self.routerai_allow_paid = bool(cfg.get("routerai_allow_paid", False))
+        # Paid RouterAI models are a fallback after free endpoints by default.
+        # Keep this aligned with AISettings.routerai_allow_paid.
+        self.routerai_allow_paid = bool(cfg.get("routerai_allow_paid", True))
         self.routerai_model = cfg.get("routerai_model") or ""
         configured = cfg.get("routerai_models") or ()
         raw = configured if isinstance(configured, (list, tuple)) else str(configured).split(",")
