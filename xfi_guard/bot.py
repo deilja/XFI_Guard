@@ -22,11 +22,12 @@ from .security import collect_security_checks
 from .vpn import collect_vpn_checks
 from .nodes import collect_nodes
 from .nodes_ui import install_node_handlers
+from .cluster_ui import install_cluster_handlers
 
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["⚙️ 3X-UI","🤖 AI"],["🛡 Картина атак","🧠 Security Brain"],["🖥 VPS узлы"],["🚫 Блокировка IP"],["🔄 Проверить сейчас"],["🔄 Обновить XFI Guard","⚡ Принудительное обновление"],["❓ Помощь"]])
+def main_kb(): return kb([["📊 Статус","🔐 Безопасность"],["🛡 Fail2Ban","🔥 UFW"],["🌐 VPN/Xray","📋 События"],["⚙️ 3X-UI","🤖 AI"],["🛡 Картина атак","🧠 Security Brain"],["🖥 VPS узлы"],["🌐 Cluster Center"],["🚫 Блокировка IP"],["🔄 Проверить сейчас"],["🔄 Обновить XFI Guard","⚡  Принудительное обновление"],["❓ Помощь"]])
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def blocked_view():
     try:
@@ -39,7 +40,7 @@ def blocked_view():
 
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
-    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS)
+    register_alert_callbacks(dp,ADMIN_IDS); install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp); install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
@@ -140,7 +141,7 @@ async def vps_view():
     for x in nodes:
         icon="🟢" if x.get("status")=="online" else "🔴"
         lines += [f"{icon} {x.get('name')} — {x.get('host')}", f"   XFI Guard: {x.get('xfi_guard','—')}", f"   Fail2Ban: {x.get('fail2ban','—')}"]
-        if x.get("error"): lines.append(f"   Ошибка: {x['error']}")
+        if x.get("error"): lines.append(f"   Ошибка: {x['error']}" )
     return "\n".join(lines)[:3900]
 
 async def main():
