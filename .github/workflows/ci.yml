@@ -1,0 +1,46 @@
+name: XFI Guard CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install project dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [[ -f requirements.txt ]]; then pip install -r requirements.txt; fi
+          if [[ -f pyproject.toml ]]; then pip install -e .; fi
+          pip install pytest pytest-asyncio
+
+      - name: Compile Python sources
+        run: python -m compileall -q xfi_guard tests
+
+      - name: Run tests
+        env:
+          PYTHONPATH: .
+        run: pytest -q
