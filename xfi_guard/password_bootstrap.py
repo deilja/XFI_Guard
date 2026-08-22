@@ -38,7 +38,7 @@ def bootstrap_with_password(host: str, user: str, port: int, password: str, time
     env["SSHPASS"] = password
     target = f"{user}@{host}"
     ssh_options = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", "-p", str(port)]
-    remote = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && grep -qxF -f /dev/stdin ~/.ssh/authorized_keys || cat >> ~/.ssh/authorized_keys"
+    remote = "key=$(cat); mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; grep -qxF \"$key\" ~/.ssh/authorized_keys || printf '%s\\n' \"$key\" >> ~/.ssh/authorized_keys"
     try:
         with pub.open("r", encoding="utf-8") as fh:
             command = ["sshpass", "-e", "ssh", *ssh_options, target, remote]
@@ -54,8 +54,6 @@ def bootstrap_with_password(host: str, user: str, port: int, password: str, time
         if verify.returncode != 0:
             return False, (verify.stderr or "SSH key verification failed")[-1200:]
 
-        # Password is no longer needed. Continue exclusively through the key
-        # and automatically install/repair XFI Guard + Fail2Ban + UFW package.
         from .node_bootstrap import bootstrap
         ok, result = bootstrap(host, user, port, timeout, str(key))
         if not ok:
