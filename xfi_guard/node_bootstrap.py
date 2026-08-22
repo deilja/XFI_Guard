@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
 
-def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60, identity_file: str | None = None) -> tuple[bool, str]:
-    """Install/repair XFI Guard and its protection stack on a trusted VPS."""
+def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60,
+              identity_file: str | None = None, *, node_id: str | None = None,
+              cluster_master: str | None = None, cluster_secret: str | None = None,
+              cluster_token: str | None = None) -> tuple[bool, str]:
+    """Install/repair XFI Guard, protection stack and optionally cluster-agent."""
     if not host or any(c.isspace() for c in host):
         return False, "invalid host"
     if not 1 <= int(port) <= 65535:
         return False, "invalid port"
     target = f"{user}@{host}"
+    cluster_enabled = bool(cluster_master and cluster_secret and node_id)
     remote = r'''set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -65,13 +70,37 @@ if command -v ufw >/dev/null 2>&1; then
 fi
 
 install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
+'''
+    if cluster_enabled:
+        values = {
+            "master": cluster_master,
+            "secret": cluster_secret,
+            "token": cluster_token or "",
+            "node": node_id,
+        }
+        remote += "\n# XFI Guard cluster enrollment\n"
+        remote += "cat > /etc/xfi-guard/cluster.env <<'XFI_CLUSTER_ENV'\n"
+        remote += "XFI_GUARD_CLUSTER_MASTER_URL=" + shlex.quote(values["master"]) + "\n"
+        remote += "XFI_GUARD_CLUSTER_SECRET=" + shlex.quote(values["secret"]) + "\n"
+        remote += "XFI_GUARD_CLUSTER_TOKEN=" + shlex.quote(values["token"]) + "\n"
+        remote += "XFI_GUARD_CLUSTER_NODE_ID=" + shlex.quote(values["node"]) + "\n"
+        remote += "XFI_CLUSTER_ENV\nchmod 0600 /etc/xfi-guard/cluster.env\n"
+        remote += "install -m 0644 systemd/xfi-guard-cluster-agent.service /etc/systemd/system/xfi-guard-cluster-agent.service\n"
+    remote += r'''
 systemctl daemon-reload
 systemctl enable --now fail2ban
 fail2ban-client reload >/dev/null 2>&1 || systemctl restart fail2ban
 fail2ban-client status xfi-guard >/dev/null
 systemctl enable --now xfi-guard.service
-sleep 2
-
+'''
+    if cluster_enabled:
+        remote += r'''systemctl enable --now xfi-guard-cluster-agent.service
+sleep 3
+cluster_state="$(systemctl is-active xfi-guard-cluster-agent.service || true)"
+'''
+    else:
+        remote += "cluster_state=disabled\n"
+    remote += r'''sleep 2
 xfi_state="$(systemctl is-active xfi-guard.service || true)"
 f2b_state="$(systemctl is-active fail2ban.service || true)"
 jail_state="$(fail2ban-client status xfi-guard 2>/dev/null | awk '/Currently banned:/ {print $NF}' || true)"
@@ -80,6 +109,7 @@ printf 'XFI_GUARD=%s\n' "$xfi_state"
 printf 'FAIL2BAN=%s\n' "$f2b_state"
 printf 'XFI_JAIL_BANNED=%s\n' "${jail_state:-0}"
 printf 'UFW=%s\n' "$ufw_state"
+printf 'CLUSTER_AGENT=%s\n' "$cluster_state"
 printf 'SSH_PORT=%s\n' "${SSH_PORT:-22}"
 if [ "$ufw_state" = inactive ]; then
   printf 'UFW_NOTE=installed_but_left_disabled_to_preserve_unknown_VPN_panel_ports\n'
@@ -91,14 +121,12 @@ fi
         if not identity.is_file():
             return False, f"SSH identity file not found: {identity}"
         cmd += ["-i", str(identity), "-o", "IdentitiesOnly=yes"]
-    cmd += [
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", f"ConnectTimeout={min(int(timeout), 60)}",
-        "-p", str(int(port)), target, "bash", "-s",
-    ]
+    cmd += ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+            "-o", f"ConnectTimeout={min(int(timeout), 60)}", "-p", str(int(port)),
+            target, "bash", "-s"]
     try:
-        p = subprocess.run(cmd, input=remote, text=True, capture_output=True, timeout=int(timeout) + 20, check=False)
+        p = subprocess.run(cmd, input=remote, text=True, capture_output=True,
+                           timeout=int(timeout) + 30, check=False)
     except Exception as exc:
         return False, f"SSH error: {type(exc).__name__}: {exc}"
     output = (p.stdout + "\n" + p.stderr).strip()
