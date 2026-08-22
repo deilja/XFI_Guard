@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from .ai_ui import install_ai_handlers
-from .ai_center import install_ai_center_handlers
+from .ai_center import install_ai_center_handlers, ai_center_menu
 from .ai_model_manager import install_ai_model_manager
 from .ai_keys_ui import install_ai_key_handlers
 from .openrouter_ui import install_openrouter_handlers
@@ -67,6 +67,11 @@ def build_dispatcher():
         await message.answer(await vps_view(),reply_markup=main_kb())
     @dp.message(F.text=="📊 Статус")
     async def status_button(message): await status_command(message)
+    @dp.message(F.text=="🛡 Защита")
+    async def defense_button(message):
+        if admin(message):
+            from .defense_ui import defense_menu, _defense_text
+            await message.answer(_defense_text(), reply_markup=defense_menu())
     @dp.message(F.text=="🌐 VPN/Xray")
     async def vpn_button(message):
         if admin(message): await message.answer("🌐 VPN/Xray\n\n"+results(collect_vpn_checks()),reply_markup=main_kb())
