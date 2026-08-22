@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -11,10 +12,18 @@ from aiogram import F
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 STATE_PATH = Path(os.getenv("XFI_GUARD_CLUSTER_STATE", "/var/lib/xfi-guard/cluster-state.json"))
+DEFAULT_MASTER_URL = "http://127.0.0.1:8765"
 
 
 def _master_url() -> str:
-    return os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", "http://127.0.0.1:8765").rstrip("/")
+    return os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", DEFAULT_MASTER_URL).strip().rstrip("/") or DEFAULT_MASTER_URL
+
+
+def _timeout() -> float:
+    try:
+        return max(1.0, min(15.0, float(os.getenv("XFI_GUARD_CLUSTER_TIMEOUT", "5"))))
+    except ValueError:
+        return 5.0
 
 
 def _get(path: str) -> dict:
@@ -22,8 +31,22 @@ def _get(path: str) -> dict:
     token = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip()
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=5) as response:
+    with urllib.request.urlopen(req, timeout=_timeout()) as response:
         return json.loads(response.read().decode())
+
+
+def _master_diagnostic(exc: Exception) -> str:
+    url = _master_url()
+    try:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=2):
+            tcp = "TCP: доступен"
+        return f"URL: {url}\n{tcp}, но HTTP-запрос завершился ошибкой: {type(exc).__name__}: {exc}"
+    except Exception as probe_exc:
+        return f"URL: {url}\nTCP: недоступен ({type(probe_exc).__name__}: {probe_exc})"
 
 
 def _buttons() -> InlineKeyboardMarkup:
@@ -72,6 +95,8 @@ def cluster_view() -> str:
         blocks = _live_blocks()
         return (
             "🌐 XFI GUARD • CLUSTER CENTER\n\n"
+            f"🟢 Cluster Master: ONLINE\n"
+            f"🔗 URL: {_master_url()}\n"
             f"🖥 Узлы: {online}/{total} онлайн\n"
             f"🚨 Активные угрозы: {threats}\n"
             f"🔒 Глобальные IP: {len(blocks)}\n"
@@ -88,8 +113,12 @@ def cluster_view() -> str:
         return (
             "🌐 XFI GUARD • CLUSTER CENTER\n\n"
             "🔴 Cluster Master недоступен.\n\n"
-            f"Причина: {type(exc).__name__}: {exc}\n\n"
-            "Проверьте cluster master и XFI_GUARD_CLUSTER_MASTER_URL."
+            f"{_master_diagnostic(exc)}\n\n"
+            "Проверьте:\n"
+            "• запущен ли xfi-guard-multi-vps-master.service;\n"
+            "• слушает ли Cluster Master нужный порт;\n"
+            "• XFI_GUARD_CLUSTER_MASTER_URL;\n"
+            "• XFI_GUARD_CLUSTER_TOKEN (если включена авторизация)."
         )
 
 
@@ -106,7 +135,7 @@ def blocks_view() -> str:
         source = item.get("source_node", "-")
         lines.append(f"🚫 {ip}")
         lines.append(f"   Источник: {source}")
-        lines.append(f"   VPS: {applied} ✅ / {queued} ⏳")
+        lines.append(f"   VPS: {applied} / {queued} в очереди")
         lines.append(f"   До: {item.get('until', '-')}")
     if len(blocks) > 40:
         lines.append(f"… ещё {len(blocks)-40}")
