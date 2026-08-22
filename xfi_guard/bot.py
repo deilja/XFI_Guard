@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from .ai_ui import install_ai_handlers
-from .ai_center import install_ai_center_handlers
+from .ai_center import install_ai_center_handlers, ai_center_menu
 from .ai_model_manager import install_ai_model_manager
 from .ai_keys_ui import install_ai_key_handlers
 from .openrouter_ui import install_openrouter_handlers
@@ -15,7 +15,7 @@ from .xui_ui import install_xui_handlers
 from .alert_callbacks import register_alert_callbacks
 from .attack_surface import collect_attack_surface
 from .checks import collect_basic_checks
-from .defense_ui import install_defense_handlers
+from .defense_ui import install_defense_handlers, defense_menu
 from .firewall import list_blocked_ips
 from .rate_limit import RateLimitMiddleware
 from .security import collect_security_checks
@@ -27,15 +27,7 @@ from .cluster_ui import install_cluster_handlers
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-
-def main_kb():
-    return kb([
-        ["📊 Статус","🛡 Защита","🌐 VPN/Xray"],
-        ["🤖 AI","🖥 VPS","🌐 Кластер"],
-        ["🚫 Блокировки","📋 События","⚙️ 3X-UI"],
-        ["🔄 Проверка","🔄 Обновить","❓ Помощь"],
-    ])
-
+def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS","🌐 Кластер"],["🚫 Блокировки","📋 События","⚙️ 3X-UI"],["🔄 Проверка","🔄 Обновить","❓ Помощь"]])
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def blocked_view():
     try:
@@ -65,9 +57,12 @@ def build_dispatcher():
         await message.answer(await vps_view(),reply_markup=main_kb())
     @dp.message(F.text=="📊 Статус")
     async def status_button(message): await status_command(message)
-    @dp.message(F.text.in_({"🛡 Защита","🔐 Безопасность"}))
+    @dp.message(F.text=="🛡 Защита")
+    async def protection_button(message):
+        if admin(message): await message.answer("🛡 ЗАЩИТА\n\nУправление Fail2Ban, UFW и ручными блокировками.",reply_markup=defense_menu())
+    @dp.message(F.text=="🔐 Безопасность")
     async def security_button(message):
-        if admin(message): await message.answer("🛡 Защита\n\n"+results(collect_security_checks()),reply_markup=main_kb())
+        if admin(message): await message.answer("🔐 Безопасность\n\n"+results(collect_security_checks()),reply_markup=main_kb())
     @dp.message(F.text=="🌐 VPN/Xray")
     async def vpn_button(message):
         if admin(message): await message.answer("🌐 VPN/Xray\n\n"+results(collect_vpn_checks()),reply_markup=main_kb())
@@ -77,9 +72,9 @@ def build_dispatcher():
     @dp.message(F.text.in_({"🌐 Кластер","🌐 Cluster Center"}))
     async def cluster_button(message):
         if admin(message): await message.answer(__import__("xfi_guard.cluster_ui",fromlist=["cluster_view"]).cluster_view(),reply_markup=main_kb())
-    @dp.message(F.text.in_({"🚫 Блокировки","🚫 Блокировка IP"}))
-    async def block_button(message):
-        if admin(message): await message.answer(blocked_view()+"\n\nРучная блокировка доступна через «📋 События».",reply_markup=main_kb())
+    @dp.message(F.text=="🚫 Блокировки")
+    async def blocks_button(message):
+        if admin(message): await message.answer(blocked_view()+"\n\nДля ручного управления откройте «🛡 Защита».",reply_markup=main_kb())
     @dp.message(F.text=="📋 События")
     async def events_button(message):
         if not admin(message): return
@@ -88,18 +83,18 @@ def build_dispatcher():
         await message.answer("📋 Последние события\n\n"+text,reply_markup=main_kb())
     @dp.message(F.text=="🤖 AI")
     async def ai_button(message):
-        if admin(message): await message.answer("🤖 AI ЦЕНТР\n\nЕдиный консилиум Gemini + Groq + OpenRouter.",reply_markup=kb([["🔑 API ключи","🧩 API модели"],["🧪 Проверить AI","📊 Консенсус AI"],["🩺 Здоровье AI","ℹ️ Статус AI"],["🔄 Синхронизация AI"],["⬅️ Главное меню"]]))
+        if admin(message): await message.answer("🤖 AI ЦЕНТР\n\nЕдиный консилиум Gemini + Groq + OpenRouter + RouterAI.",reply_markup=ai_center_menu())
     @dp.message(F.text=="⚙️ 3X-UI")
     async def xui_button(message):
-        if admin(message): await message.answer("⚙️ 3X-UI\n\nУправление панелью Xray/3X-UI доступно через раздел.",reply_markup=main_kb())
+        if admin(message): await message.answer("⚙️ 3X-UI\n\nУправление API-подключениями 3X-UI.",reply_markup=__import__("xfi_guard.xui_ui",fromlist=["xui_menu"]).xui_menu())
     @dp.message(F.text=="🔄 Проверка")
     async def check_button(message): await status_command(message)
     @dp.message(F.text=="🔄 Обновить")
     async def update_button(message):
-        if admin(message): await message.answer("⏳ Запускаю обновление XFI Guard..."); subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        if admin(message): await message.answer("⏳ Запускаю безопасное обновление XFI Guard..."); subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     @dp.message(F.text=="❓ Помощь")
     async def help_button(message):
-        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — блокировки IP\n/vps — VPS узлы\n/force_update — принудительное обновление\n/threats — рейтинг угроз",reply_markup=main_kb())
+        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — состояние подключённых VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты",reply_markup=main_kb())
     @dp.message(F.text=="⬅️ Главное меню")
     async def back_main(message,state:FSMContext):
         if admin(message): await state.clear(); await message.answer("🏠 Главное меню",reply_markup=main_kb())
