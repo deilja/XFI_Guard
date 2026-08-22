@@ -7,14 +7,7 @@ from pathlib import Path
 
 
 def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60, identity_file: str | None = None) -> tuple[bool, str]:
-    """Install/repair XFI Guard and its protection stack on a trusted VPS.
-
-    The remote installer is idempotent. It installs missing prerequisites,
-    Fail2Ban and UFW packages, deploys XFI Guard, and enables the dedicated
-    seven-day xfi-guard jail. UFW is never enabled blindly: an existing active
-    firewall is preserved and an inactive firewall is left disabled to avoid
-    locking the administrator out of unknown VPN/panel ports.
-    """
+    """Install/repair XFI Guard and its protection stack on a trusted VPS."""
     if not host or any(c.isspace() for c in host):
         return False, "invalid host"
     if not 1 <= int(port) <= 65535:
@@ -36,6 +29,10 @@ else
 fi
 
 INSTALL_DIR=/opt/xfi-guard
+CONFIG_BACKUP=$(mktemp)
+trap 'rm -f "$CONFIG_BACKUP"' EXIT
+if [ -f "$INSTALL_DIR/config.toml" ]; then cp -a "$INSTALL_DIR/config.toml" "$CONFIG_BACKUP"; fi
+
 mkdir -p /var/log/xfi-guard /var/lib/xfi-guard /etc/xfi-guard
 chmod 0755 /var/log/xfi-guard
 chmod 0700 /var/lib/xfi-guard /etc/xfi-guard
@@ -48,41 +45,11 @@ else
   git clone --depth 1 https://github.com/deilja/XFI_Guard.git "$INSTALL_DIR"
 fi
 
+if [ -s "$CONFIG_BACKUP" ]; then cp -a "$CONFIG_BACKUP" "$INSTALL_DIR/config.toml"; fi
 cd "$INSTALL_DIR"
 python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/python" -m pip install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade .
-
-if [ ! -f "$INSTALL_DIR/config.toml" ]; then
-  cat >"$INSTALL_DIR/config.toml" <<'EOF'
-[monitor]
-interval_seconds = 60
-log_level = "INFO"
-output_file = "/var/log/xfi-guard/monitor.jsonl"
-state_file = "/var/lib/xfi-guard/state.json"
-[thresholds]
-disk_warning_percent = 85
-memory_warning_percent = 90
-[vpn]
-services = ["xray", "x-ui", "3x-ui"]
-ports = [22, 80, 443, 2053, 2083, 2087, 2096]
-[events]
-ssh_log = "/var/log/auth.log"
-fail2ban_log = "/var/log/fail2ban.log"
-max_events_per_cycle = 100
-[telegram]
-enabled = false
-cooldown_seconds = 300
-[ai]
-provider = "gemini"
-max_events_per_cycle = 10
-[auto_block]
-enabled = true
-confidence = 0.90
-min_attempts = 5
-db = "/var/lib/xfi-guard/security.db"
-EOF
-fi
 
 install -m 0644 config/fail2ban/filter.d/xfi-guard.conf /etc/fail2ban/filter.d/xfi-guard.conf
 install -m 0644 config/fail2ban/jail.d/xfi-guard.conf /etc/fail2ban/jail.d/xfi-guard.conf
