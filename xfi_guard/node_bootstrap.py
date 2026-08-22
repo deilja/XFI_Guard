@@ -1,16 +1,19 @@
-"""Safe remote VPS bootstrap via the local SSH agent/known_hosts."""
+"""Safe remote VPS bootstrap via the local SSH identity/agent."""
 from __future__ import annotations
 
-import shlex
+import os
 import subprocess
+from pathlib import Path
 
 
-def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 30) -> tuple[bool, str]:
-    """Install/repair XFI Guard prerequisites on a trusted node.
-
-    No password/private key is accepted or stored. SSH uses the caller's
-    normal agent and known_hosts configuration.
-    """
+def bootstrap(
+    host: str,
+    user: str = "root",
+    port: int = 22,
+    timeout: int = 30,
+    identity_file: str | None = None,
+) -> tuple[bool, str]:
+    """Install/repair XFI Guard on a trusted node using its configured identity."""
     if not host or any(c.isspace() for c in host):
         return False, "invalid host"
     target = f"{user}@{host}"
@@ -30,9 +33,24 @@ systemctl enable --now fail2ban
 fail2ban-client status xfi-guard >/dev/null
 printf 'XFI_GUARD_BOOTSTRAP_OK\n'
 '''
-    cmd = [
-        "ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-        "-o", f"ConnectTimeout={int(timeout)}", "-p", str(int(port)), target,
+    cmd = ["ssh"]
+    if identity_file:
+        identity = Path(os.path.expanduser(identity_file))
+        if not identity.exists():
+            return False, f"SSH identity file not found: {identity}"
+        cmd += ["-i", str(identity)]
+    cmd += [
+        "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes" if identity_file else "-o",
+    ]
+    if identity_file:
+        # Replace the compact pair above with the actual SSH option/value.
+        cmd = ["ssh", "-i", str(Path(os.path.expanduser(identity_file))),
+               "-o", "IdentitiesOnly=yes"]
+    cmd += [
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", f"ConnectTimeout={int(timeout)}",
+        "-p", str(int(port)), target,
         "bash", "-s",
     ]
     try:
