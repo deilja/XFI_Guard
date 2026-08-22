@@ -7,6 +7,7 @@ import socket
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from aiogram import F
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,27 +29,47 @@ def _timeout() -> float:
         return 5.0
 
 
-def _get(path: str) -> dict:
-    req = urllib.request.Request(_master_url() + path, method="GET")
+def _request(path: str) -> dict:
+    url = _master_url() + path
+    req = urllib.request.Request(url, method="GET")
     token = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip()
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=_timeout()) as response:
-        return json.loads(response.read().decode())
+    if not token:
+        raise RuntimeError("XFI_GUARD_CLUSTER_TOKEN не задан")
+    req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=_timeout()) as response:
+            status = getattr(response, "status", 200)
+            data = json.loads(response.read().decode())
+            if status >= 400:
+                raise RuntimeError(data.get("error", f"HTTP {status}"))
+            return data
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode()).get("error", "")
+        except Exception:
+            detail = ""
+        raise RuntimeError(f"HTTP {exc.code}" + (f": {detail}" if detail else "")) from exc
 
 
 def _master_diagnostic(exc: Exception) -> str:
     url = _master_url()
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not host:
+        return f"URL: {url}\nDNS/URL: некорректный адрес"
     try:
-        from urllib.parse import urlsplit
-        parsed = urlsplit(url)
-        host = parsed.hostname or ""
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
         with socket.create_connection((host, port), timeout=2):
-            tcp = "TCP: доступен"
-        return f"URL: {url}\n{tcp}, HTTP: {type(exc).__name__}: {exc}"
-    except Exception as probe_exc:
-        return f"URL: {url}\nTCP: недоступен ({type(probe_exc).__name__}: {probe_exc})"
+            tcp = "🟢 TCP: доступен"
+    except socket.gaierror as probe_exc:
+        return f"URL: {url}\n🔴 DNS: {probe_exc}"
+    except ConnectionRefusedError:
+        return f"URL: {url}\n🔴 TCP: Connection refused — порт {port} не принимает соединения"
+    except TimeoutError:
+        return f"URL: {url}\n🔴 TCP: timeout — узел не отвечает"
+    except OSError as probe_exc:
+        return f"URL: {url}\n🔴 TCP: недоступен ({probe_exc})"
+    return f"URL: {url}\n{tcp}\n🔴 HTTP: {type(exc).__name__}: {exc}"
 
 
 def _buttons() -> InlineKeyboardMarkup:
@@ -88,15 +109,15 @@ def _format_nodes(data: dict) -> str:
 
 def _live_blocks() -> list[dict]:
     try:
-        return list(_get("/blocks").get("blocks", []))
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return list(_request("/blocks").get("blocks", []))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError):
         return [{"ip": ip, **item} for ip, item in _state_blocks().items()]
 
 
 def cluster_view() -> str:
     try:
-        health = _get("/health")
-        nodes = _get("/nodes")
+        health = _request("/health")
+        nodes = _request("/nodes")
         summary = cluster_summary(nodes.get("nodes", []))
         blocks = _live_blocks()
         master_icon = "🟢" if health.get("ok") else "🔴"
@@ -120,7 +141,7 @@ def cluster_view() -> str:
             "• Global sync → включена\n"
             "• Heartbeat TTL: 90s"
         )
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except Exception as exc:
         return (
             "🌐 XFI GUARD • CLUSTER CENTER\n\n"
             "🔴 Cluster Master недоступен.\n\n"
@@ -128,7 +149,7 @@ def cluster_view() -> str:
             "Проверьте:\n"
             "• xfi-guard-multi-vps-master.service\n"
             "• XFI_GUARD_CLUSTER_MASTER_URL\n"
-            "• порт 8765\n"
+            "• порт Cluster Master\n"
             "• XFI_GUARD_CLUSTER_TOKEN"
         )
 
