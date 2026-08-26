@@ -32,7 +32,7 @@ def main_kb():
         ["📊 Статус","🛡 Защита","🌐 VPN/Xray"],
         ["🤖 AI","🖥 VPS","🌐 Кластер"],
         ["🚫 Блокировки","📋 События","⚙️ 3X-UI"],
-        ["🔄 Проверка","🔄 Обновить","❓ Помощь"],
+        ["🔄 Проверка","🔄 Обновить бота","❓ Помощь"],
     ])
 
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
@@ -88,9 +88,11 @@ def build_dispatcher():
         if admin(message): await message.answer("🤖 AI ЦЕНТР\n\nЕдиный консилиум Gemini + Groq + OpenRouter + RouterAI.",reply_markup=ai_center_menu())
     @dp.message(F.text=="🔄 Проверка")
     async def check_button(message): await status_command(message)
-    @dp.message(F.text=="🔄 Обновить")
+    @dp.message(F.text=="🔄 Обновить бота")
     async def update_button(message):
-        if admin(message): await message.answer("⏳ Запускаю безопасное обновление XFI Guard..."); subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        if admin(message):
+            await message.answer("⏳ Запускаю безопасное обновление XFI Guard...")
+            subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     @dp.message(F.text=="❓ Помощь")
     async def help_button(message):
         if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — меню VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты",reply_markup=main_kb())
