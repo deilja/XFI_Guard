@@ -34,10 +34,7 @@ def adapt_weights(analyzer=None,min_weight=.25,max_weight=1.5):
 def run_health_check():
     analyzer=AIAnalyzer(); analyzer.reset_health() if hasattr(analyzer,"reset_health") else None
     results=[]; started=time.monotonic()
-    # Prefer the stable low-level API so health checks always bypass model cooldowns.
-    if hasattr(analyzer,"check_all_providers"):
-        checked=analyzer.check_all_providers()
-    else: checked=[]
+    checked=analyzer.check_all_providers() if hasattr(analyzer,"check_all_providers") else []
     for provider in PROVIDERS:
         item=next((x for x in checked if x.get("provider")==provider),{})
         configured=bool(provider in (analyzer.available_providers() if hasattr(analyzer,"available_providers") else []))
@@ -46,4 +43,7 @@ def run_health_check():
         else:
             model=getattr(analyzer,f"{provider}_model","") if provider!="gemini" else getattr(getattr(analyzer,"gemini",None),"model",""); ok=bool(item.get("ok",False)); err=str(item.get("error") or ("проверка API не прошла" if not ok else ""))
         latency=float(item.get("latency_ms",0) or 0); record(provider,model,ok,latency,err); results.append({"provider":provider,"model":model,"ok":ok,"latency_ms":latency,"error":err,"configured":configured})
-    weights=adapt_weights(analyzer); return {"results":results,"weights":weights,"elapsed_ms":round((time.monotonic()-started)*1000,1),"health":analyzer.health() if hasattr(analyzer,"health") else {},"timestamp":datetime.now(timezone.utc).isoformat()}
+    # Keep compatibility with callers/tests that provide a zero-argument weight hook.
+    try: weights=adapt_weights(analyzer)
+    except TypeError: weights=adapt_weights()
+    return {"results":results,"weights":weights,"elapsed_ms":round((time.monotonic()-started)*1000,1),"health":analyzer.health() if hasattr(analyzer,"health") else {},"timestamp":datetime.now(timezone.utc).isoformat()}
