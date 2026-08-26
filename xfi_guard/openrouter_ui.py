@@ -1,11 +1,15 @@
-"""Legacy OpenRouter UI compatibility shim.
-
-OpenRouter model management is now handled by ai_model_manager.
-This module intentionally registers no handlers to prevent duplicate menus.
-"""
+"""OpenRouter UI compatibility API."""
 from __future__ import annotations
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
+def openrouter_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔄 Синхронизировать OpenRouter")],
+            [KeyboardButton(text="🧩 Модели OpenRouter")],
+            [KeyboardButton(text="⬅️ Главное меню")],
+        ], resize_keyboard=True, is_persistent=True,
+    )
 
 def install_openrouter_handlers(dp) -> None:
-    """Compatibility no-op; legacy OpenRouter handlers are disabled."""
     return None
