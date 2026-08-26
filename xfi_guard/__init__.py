@@ -5,11 +5,13 @@ __version__ = "1.1.0"
 
 def _install_ai_analyzer_compat() -> None:
     """Keep the public analyzer API compatible with direct prompts and config sync."""
+    from . import ai as ai_module
     from .ai import AIAnalyzer
-    from .ai_store import load
 
     def _configured_openrouter():
-        cfg = load()
+        # Use the same load() function as AIAnalyzer itself. This is important for
+        # config reloads and for callers/tests that replace ai.load dynamically.
+        cfg = ai_module.load()
         configured_model = str(cfg.get("openrouter_model") or "").strip()
         configured_models = cfg.get("openrouter_models") or ()
         if isinstance(configured_models, (list, tuple)):
