@@ -19,9 +19,9 @@ from .firewall import list_blocked_ips
 from .rate_limit import RateLimitMiddleware
 from .security import collect_security_checks
 from .vpn import collect_vpn_checks
-from .nodes import collect_nodes
 from .nodes_ui import install_node_handlers
 from .cluster_ui import install_cluster_handlers
+from .vps_ui import install_vps_handlers
 
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
@@ -49,7 +49,7 @@ def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
     register_alert_callbacks(dp,ADMIN_IDS)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
-    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb)
+    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb); install_vps_handlers(dp, main_kb)
 
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
@@ -63,8 +63,7 @@ def build_dispatcher():
         if admin(message): await message.answer(blocked_view(),reply_markup=main_kb())
     @dp.message(Command("vps"))
     async def vps_command(message):
-        if not admin(message): return
-        await message.answer(await vps_view(),reply_markup=main_kb())
+        if admin(message): await message.answer("🖥 VPS\n\nЦентр диагностики и управления VPS.",reply_markup=__import__('xfi_guard.vps_ui',fromlist=['vps_menu']).vps_menu())
     @dp.message(F.text=="📊 Статус")
     async def status_button(message): await status_command(message)
     @dp.message(F.text=="🛡 Защита")
@@ -75,9 +74,6 @@ def build_dispatcher():
     @dp.message(F.text=="🌐 VPN/Xray")
     async def vpn_button(message):
         if admin(message): await message.answer("🌐 VPN/Xray\n\n"+results(collect_vpn_checks()),reply_markup=main_kb())
-    @dp.message(F.text.in_({"🖥 VPS","🖥 VPS узлы"}))
-    async def vps_button(message):
-        if admin(message): await message.answer(await vps_view(),reply_markup=main_kb())
     @dp.message(F.text=="🚫 Блокировки")
     async def blocks_button(message):
         if admin(message): await message.answer(blocked_view()+"\n\nДля ручного управления откройте «🛡 Защита».",reply_markup=main_kb())
@@ -97,7 +93,7 @@ def build_dispatcher():
         if admin(message): await message.answer("⏳ Запускаю безопасное обновление XFI Guard..."); subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     @dp.message(F.text=="❓ Помощь")
     async def help_button(message):
-        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — состояние подключённых VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты",reply_markup=main_kb())
+        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — меню VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты",reply_markup=main_kb())
     @dp.message(F.text=="⬅️ Главное меню")
     async def back_main(message,state:FSMContext):
         if admin(message): await state.clear(); await message.answer("🏠 Главное меню",reply_markup=main_kb())
@@ -105,15 +101,6 @@ def build_dispatcher():
     async def unknown_message(message):
         if admin(message): await message.answer("Команда не распознана. Нажмите /start.",reply_markup=main_kb())
     return dp
-
-async def vps_view():
-    nodes=await asyncio.to_thread(collect_nodes)
-    if not nodes: return "🖥 VPS УЗЛЫ\n\nПодключённые узлы не настроены.\n\nДобавьте [[nodes]] в config.toml."
-    lines=["🖥 VPS УЗЛЫ", "", f"Всего узлов: {len(nodes)}"]
-    for x in nodes:
-        icon="🟢" if x.get("status")=="online" else "🔴"; lines += [f"{icon} {x.get('name')} — {x.get('host')}",f"   XFI Guard: {x.get('xfi_guard','—')}",f"   Fail2Ban: {x.get('fail2ban','—')}"]
-        if x.get("error"): lines.append(f"   Ошибка: {x['error']}" )
-    return "\n".join(lines)[:3900]
 
 async def main():
     token=os.getenv("XFI_GUARD_BOT_TOKEN","").strip()
