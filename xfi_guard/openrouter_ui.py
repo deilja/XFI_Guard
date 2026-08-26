@@ -6,7 +6,8 @@ def openrouter_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🟣 OpenRouter")],
-            [KeyboardButton(text="🔄 Синхронизировать OpenRouter")],
+            [KeyboardButton(text="🔄 Синхронизировать AI")],
+            [KeyboardButton(text="🧪 Проверить OpenRouter")],
             [KeyboardButton(text="🧩 Модели OpenRouter")],
             [KeyboardButton(text="⬅️ Главное меню")],
         ], resize_keyboard=True, is_persistent=True,
