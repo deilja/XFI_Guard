@@ -1,21 +1,20 @@
 """Проверка фактического состояния 3X-UI/Xray и сетевых портов + API-мониторинг."""
 from __future__ import annotations
-import os, re
+import os,re
 from typing import Optional
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from .checks import CheckResult, _run
+from .checks import CheckResult,_run
 XRAY_RE=re.compile(r"(?:^|[\s/])(xray|xray-linux(?:-amd64|-arm64|-arm)?)(?:$|[\s])",re.I)
 _XRAY_ERROR_RE=re.compile(r"\b(error|failed|failure|fatal|panic|exception)\b",re.I)
-
 def _service_state(service):
-    code,out,err=_run(["systemctl","is-active",service]); return out.strip() if code==0 else (out.strip() or err.strip() or "unknown")
+    code,out,err=_run(["systemctl","is-active",service]);return out.strip() if code==0 else (out.strip() or err.strip() or "unknown")
 def _panel_services():
     found=[]
     for s in ("x-ui","3x-ui"):
         code,_,_=_run(["systemctl","cat",s])
-        if code==0: found.append(s)
+        if code==0:found.append(s)
     return found or ["x-ui","3x-ui"]
 def _discover_xui_host()->Optional[str]:
     for key in ("XUI_HOST","XUI_URL","XUI_BASE_URL"):
@@ -25,22 +24,17 @@ def _discover_xui_host()->Optional[str]:
     if p.isdigit() and 1<=int(p)<=65535:return f"http://127.0.0.1:{p}"
     code,out,_=_run(["ss","-lnt"])
     if code!=0:return None
-    preferred=[2053,2083,2087,2096,8080,8000]
-    found=[]
+    preferred=[2053,2083,2087,2096,8080,8000];found=[]
     for line in out.splitlines()[1:]:
-        f=line.split(); local=f[3] if len(f)>=4 else ""; port=local.rsplit(":",1)[-1].strip("[]")
+        f=line.split();local=f[3] if len(f)>=4 else "";port=local.rsplit(":",1)[-1].strip("[]")
         if port.isdigit() and int(port) in preferred:found.append(int(port))
     return f"http://127.0.0.1:{sorted(set(found),key=lambda x:preferred.index(x))[0]}" if found else None
-
 class XUIApiClient:
     def __init__(self,base_url,token=None,username=None,password=None,web_base_path="/",verify_ssl=True,timeout=8.0):
-        self.base_url=base_url.rstrip("/"); self.web_base_path=web_base_path or "/"
-        if not self.web_base_path.startswith("/"):self.web_base_path="/"+self.web_base_path
+        self.base_url=base_url.rstrip("/");self.web_base_path=web_base_path or "/";self.web_base_path="/"+self.web_base_path.lstrip("/")
         if self.web_base_path!="/":self.web_base_path=self.web_base_path.rstrip("/")
-        self.token=token or os.getenv("XUI_TOKEN"); self.username=username or os.getenv("XUI_USERNAME"); self.password=password or os.getenv("XUI_PASSWORD"); self.verify_ssl=verify_ssl; self.timeout=timeout; self.session=requests.Session()
-        retry=Retry(total=2,connect=2,read=2,backoff_factor=.4,status_forcelist=(502,503,504),allowed_methods=frozenset({"GET","POST"})); self.session.mount("http://",HTTPAdapter(max_retries=retry)); self.session.mount("https://",HTTPAdapter(max_retries=retry))
+        self.token=token or os.getenv("XUI_TOKEN");self.username=username or os.getenv("XUI_USERNAME");self.password=password or os.getenv("XUI_PASSWORD");self.verify_ssl=verify_ssl;self.timeout=timeout;self.session=requests.Session();retry=Retry(total=2,connect=2,read=2,backoff_factor=.4,status_forcelist=(502,503,504),allowed_methods=frozenset({"GET","POST"}));self.session.mount("http://",HTTPAdapter(max_retries=retry));self.session.mount("https://",HTTPAdapter(max_retries=retry));self._logged_in=bool(self.token)
         if self.token:self.session.headers["Authorization"]=f"Bearer {self.token}"
-        self._logged_in=bool(self.token)
     def _url(self,path):return f"{self.base_url}{self.web_base_path}{path if path.startswith('/') else '/'+path}"
     @staticmethod
     def _json(r):
@@ -69,7 +63,6 @@ class XUIApiClient:
         if not self._logged_in and not self.login():return {"success":False,"msg":"auth failed"}
         try:return self._json(self.session.post(self._url(path),data=data or {},timeout=self.timeout,verify=self.verify_ssl))
         except requests.RequestException as e:return {"success":False,"msg":str(e)}
-
 def _get_api_client():
     host=_discover_xui_host()
     if not host:return None
@@ -79,7 +72,14 @@ def _get_api_client():
 def _xray_processes():
     code,out,_=_run(["ps","-eo","pid=,comm=,args="])
     if code!=0:return []
-    return [x.strip() for x in out.splitlines() if x.strip() and (x.split(None,2)[1].lower() in {"xray","xray-linux-amd64","xray-linux-arm64","xray-linux-arm"} or XRAY_RE.search(x))]
+    result=[]
+    for line in out.splitlines():
+        text=line.strip()
+        if not text:continue
+        fields=text.split(None,2)
+        comm=fields[1].lower() if len(fields)>1 else ""
+        if comm in {"xray","xray-linux-amd64","xray-linux-arm64","xray-linux-arm"} or XRAY_RE.search(text):result.append(text)
+    return result
 def check_xray_runtime():
     m=_xray_processes();return CheckResult("xray_runtime","ok","Xray реально запущен и работает как процесс",{"processes":m}) if m else CheckResult("xray_runtime","critical","Процесс Xray не запущен",{})
 def check_panel_service(services=("x-ui","3x-ui")):
@@ -94,6 +94,7 @@ def check_service_candidates(services=("xray","x-ui","3x-ui")):
         else:status,msg="unknown",f"Состояние сервиса {s}: {st}"
         out.append(CheckResult("vpn_service",status,msg,{"service":s,"state":st}))
     return out
+
 def check_listening_ports(ports=(22,80,443,2053,2083,2087,2096)):
     code,out,err=_run(["ss","-lntup"])
     if code!=0:return CheckResult("network","unknown","Не удалось проверить открытые сетевые порты",{"output":out or err})
@@ -131,7 +132,7 @@ def check_api_inbounds_summary(client=None):
 def check_api_xray_logs(client=None,count=100,filter_text=""):
     client=client or _get_api_client()
     if client is None:return CheckResult("api_xray_logs","info","3X-UI API не настроен",{})
-    form={"showDirect":"true","showBlocked":"true","showProxy":"true"};
+    form={"showDirect":"true","showBlocked":"true","showProxy":"true"}
     if filter_text:form["filter"]=filter_text
     d=client.post_form(f"/panel/api/server/xraylogs/{max(1,min(int(count),1000))}",form)
     if not d.get("success"):return CheckResult("api_xray_logs","warning",f"Не удалось получить xraylogs: {d.get('msg','error')}",{})
