@@ -5,6 +5,7 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 def openrouter_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text="🟣 OpenRouter")],
             [KeyboardButton(text="🔄 Синхронизировать OpenRouter")],
             [KeyboardButton(text="🧩 Модели OpenRouter")],
             [KeyboardButton(text="⬅️ Главное меню")],
