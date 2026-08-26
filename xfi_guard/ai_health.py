@@ -34,16 +34,25 @@ def adapt_weights(analyzer=None,min_weight=.25,max_weight=1.5):
 def run_health_check():
     analyzer=AIAnalyzer(); analyzer.reset_health() if hasattr(analyzer,"reset_health") else None
     results=[]; started=time.monotonic()
+    available=set(analyzer.available_providers()) if hasattr(analyzer,"available_providers") else set()
     checked=analyzer.check_all_providers() if hasattr(analyzer,"check_all_providers") else []
     for provider in PROVIDERS:
         item=next((x for x in checked if x.get("provider")==provider),{})
-        configured=bool(provider in (analyzer.available_providers() if hasattr(analyzer,"available_providers") else []))
+        configured=provider in available if hasattr(analyzer,"available_providers") else True
+        model=getattr(analyzer,f"{provider}_model","") if provider!="gemini" else getattr(getattr(analyzer,"gemini",None),"model","")
+        if configured and not item and hasattr(analyzer,"_chat_model"):
+            # Compatibility fallback for analyzers that expose only the low-level
+            # chat API. force=True deliberately bypasses normal provider cooldown.
+            try:
+                probe=analyzer._chat_model(provider,model,"Reply with exactly {}",json_mode=True,force=True)
+                item={"ok":bool(probe is not None),"latency_ms":0,"error":"" if probe is not None else "empty response"}
+            except Exception as exc:
+                item={"ok":False,"latency_ms":0,"error":f"{type(exc).__name__}: {exc}"}
         if not configured:
-            model=getattr(analyzer,f"{provider}_model","") if provider!="gemini" else getattr(getattr(analyzer,"gemini",None),"model",""); ok=False; err="API-ключ не настроен"
+            ok=False; err="API-ключ не настроен"
         else:
-            model=getattr(analyzer,f"{provider}_model","") if provider!="gemini" else getattr(getattr(analyzer,"gemini",None),"model",""); ok=bool(item.get("ok",False)); err=str(item.get("error") or ("проверка API не прошла" if not ok else ""))
+            ok=bool(item.get("ok",False)); err=str(item.get("error") or ("проверка API не прошла" if not ok else ""))
         latency=float(item.get("latency_ms",0) or 0); record(provider,model,ok,latency,err); results.append({"provider":provider,"model":model,"ok":ok,"latency_ms":latency,"error":err,"configured":configured})
-    # Keep compatibility with callers/tests that provide a zero-argument weight hook.
     try: weights=adapt_weights(analyzer)
     except TypeError: weights=adapt_weights()
     return {"results":results,"weights":weights,"elapsed_ms":round((time.monotonic()-started)*1000,1),"health":analyzer.health() if hasattr(analyzer,"health") else {},"timestamp":datetime.now(timezone.utc).isoformat()}
