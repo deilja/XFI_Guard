@@ -34,6 +34,30 @@ def _should_notify(state,item,now):
     score=int(item.get("risk_score",0) or 0)
     return (now-last)>=ALERT_COOLDOWN or score>=last_score+10
 
+def _normalize_consensus(consensus):
+    """Make AI telemetry truthful: counts/consensus come only from real verdicts."""
+    result=dict(consensus or {})
+    verdicts=[v for v in (result.get("verdicts") or []) if isinstance(v,dict) and v.get("risk")]
+    if not verdicts:
+        result.update({"verdicts":[],"providers":[],"models":[],"providers_used":0,"models_used":0,"consensus":False,"confidence":0.0,"winner":"unknown","mode":"unavailable","degraded":True})
+        return result
+    providers=[]; models=[]
+    for verdict in verdicts:
+        provider=str(verdict.get("provider","")).strip()
+        model=str(verdict.get("model","")).strip()
+        if provider and provider not in providers: providers.append(provider)
+        if model and model not in models: models.append(model)
+    result["verdicts"]=verdicts[:10]
+    result["providers"]=providers
+    result["models"]=models
+    result["providers_used"]=len(providers)
+    result["models_used"]=len(models)
+    if not providers or not models:
+        result["consensus"]=False
+        result["mode"]="degraded"
+        result["degraded"]=True
+    return result
+
 def scan_once(threshold=60,max_ips=5,notify=True):
     state=_load(); surface=collect_attack_surface(); previous=state.setdefault("seen",{}); candidates=[]; now=time.time()
     for item in surface.get("ips",[]):
@@ -44,7 +68,7 @@ def scan_once(threshold=60,max_ips=5,notify=True):
     candidates=sorted(candidates,key=lambda x:int(x.get("risk_score",0) or 0),reverse=True)[:max(1,min(max_ips,20))]; alerts=[]; analyzer=AIAnalyzer()
     for item in candidates:
         event={"ip":item.get("ip"),"risk_score":item.get("risk_score"),"risk":item.get("risk"),"events":item.get("events"),"sources":item.get("sources"),"reasons":item.get("reasons")}
-        consensus=analyzer.analyze_consensus(event); decision=create_ai_decision(event,consensus,state_file=STATE_FILE.with_name("ai_decisions.json"))
+        consensus=_normalize_consensus(analyzer.analyze_consensus(event)); decision=create_ai_decision(event,consensus,state_file=STATE_FILE.with_name("ai_decisions.json"))
         alert={"id":_fingerprint(item),"decision_id":decision["id"],"timestamp":datetime.now(timezone.utc).isoformat(),"ip":item.get("ip"),"score":item.get("risk_score"),"risk":item.get("risk"),"consensus":consensus}; alerts.append(alert)
         if notify and _should_notify(state,item,now):
             try:
