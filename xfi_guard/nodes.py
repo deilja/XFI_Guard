@@ -55,33 +55,23 @@ def enroll_host_key(node:Node,timeout:int=10)->tuple[bool,str]:
                 for line in additions:f.write(line+"\n")
         return True,str(known)
     except Exception as exc:return False,f"{type(exc).__name__}: {exc}"
-
-def probe_node(node:Node,timeout:int=8)->dict:
-    # Send the diagnostic program via stdin. This avoids nested shell quoting
-    # entirely and works with ssh implementations that wrap commands in bash -c.
-    script="""import json, platform, subprocess
+_REMOTE_SCRIPT="""import json, platform, subprocess
 
 def run(command):
-    try:
-        return subprocess.run(command, shell=True, capture_output=True, text=True, timeout=4).stdout.strip()
-    except Exception:
-        return ""
-
-print(json.dumps({
-    "hostname": platform.node(),
-    "xfi_guard": run("systemctl is-active xfi-guard.service"),
-    "fail2ban": run("systemctl is-active fail2ban.service"),
-    "ufw": run("systemctl is-active ufw.service"),
-    "load": run("cut -d' ' -f1-3 /proc/loadavg"),
-    "disk": run("df -P / | tail -1 | awk '{print $5, $4}'"),
-    "memory": run("free -m | awk '/^Mem:/{print $3, $2}'"),
-    "uptime": run("uptime -p"),
-}, ensure_ascii=False))
+    try:return subprocess.run(command,shell=True,capture_output=True,text=True,timeout=4).stdout.strip()
+    except Exception:return ""
+print(json.dumps({"hostname":platform.node(),"xfi_guard":run("systemctl is-active xfi-guard.service"),"fail2ban":run("systemctl is-active fail2ban.service"),"ufw":run("systemctl is-active ufw.service"),"load":run("cut -d' ' -f1-3 /proc/loadavg"),"disk":run("df -P / | tail -1 | awk '{print $5, $4}'"),"memory":run("free -m | awk '/^Mem:/{print $3, $2}'"),"uptime":run("uptime -p"),"checked_at":run("date -u '+%Y-%m-%d %H:%M:%S UTC'")},ensure_ascii=False))
 """
+def probe_node(node:Node,timeout:int=8)->dict:
     try:
-        p=subprocess.run(_ssh_base(node)+["python3", "-"],input=script,text=True,capture_output=True,timeout=timeout,check=False)
+        p=subprocess.run(_ssh_base(node)+["python3","-"],input=_REMOTE_SCRIPT,text=True,capture_output=True,timeout=timeout,check=False)
         if p.returncode!=0:return {"name":node.name,"host":node.host,"status":"offline","error":(p.stderr or "ssh failed").strip()[:500]}
-        output=p.stdout.strip().splitlines()
-        payload=json.loads(output[-1]); return {"name":node.name,"host":node.host,"status":"online",**payload}
+        payload=json.loads(p.stdout.strip().splitlines()[-1]); return {"name":node.name,"host":node.host,"status":"online",**payload}
     except Exception as exc:return {"name":node.name,"host":node.host,"status":"offline","error":f"{type(exc).__name__}: {exc}"}
+def restart_guard(node:Node,timeout:int=12)->tuple[bool,str]:
+    try:
+        p=subprocess.run(_ssh_base(node)+["sudo","-n","systemctl","restart","xfi-guard.service"],text=True,capture_output=True,timeout=timeout,check=False)
+        if p.returncode!=0:return False,(p.stderr or p.stdout or "restart failed").strip()[:600]
+        return True,"xfi-guard.service перезапущен"
+    except Exception as exc:return False,f"{type(exc).__name__}: {exc}"
 def collect_nodes(path:str|Path="config.toml")->list[dict]:return [probe_node(n) for n in load_nodes(path)]
