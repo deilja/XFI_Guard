@@ -1,6 +1,6 @@
 """Multi-VPS inventory, diagnostics and safe SSH host-key enrollment."""
 from __future__ import annotations
-import ipaddress, json, os, re, subprocess, tomllib
+import ipaddress, json, os, re, shlex, subprocess, tomllib
 from dataclasses import dataclass
 from pathlib import Path
 DEFAULT_IDENTITY_FILE=Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
@@ -56,9 +56,19 @@ def enroll_host_key(node:Node,timeout:int=10)->tuple[bool,str]:
         return True,str(known)
     except Exception as exc:return False,f"{type(exc).__name__}: {exc}"
 def probe_node(node:Node,timeout:int=8)->dict:
-    script=("import json,platform,subprocess; "+"run=lambda c:subprocess.run(c,shell=True,capture_output=True,text=True,timeout=4).stdout.strip(); "+"print(json.dumps({'hostname':platform.node(),'xfi_guard':run('systemctl is-active xfi-guard.service'),'fail2ban':run('systemctl is-active fail2ban.service'),'ufw':run('systemctl is-active ufw.service'),'load':run('cut -d\" \" -f1-3 /proc/loadavg'),'disk':run(\"df -P / | tail -1 | awk '{print $5, $4}'\"),'memory':run(\"free -m | awk '/^Mem:/{print $3, $2}'\"),'uptime':run('uptime -p')},ensure_ascii=False))")
+    script=("import json,platform,subprocess; "
+            "run=lambda c:subprocess.run(c,shell=True,capture_output=True,text=True,timeout=4).stdout.strip(); "
+            "print(json.dumps({'hostname':platform.node(),"
+            "'xfi_guard':run('systemctl is-active xfi-guard.service'),"
+            "'fail2ban':run('systemctl is-active fail2ban.service'),"
+            "'ufw':run('systemctl is-active ufw.service'),"
+            "'load':run('cut -d\" \" -f1-3 /proc/loadavg'),"
+            "'disk':run(\"df -P / | tail -1 | awk '{print $5, $4}'\"),"
+            "'memory':run(\"free -m | awk '/^Mem:/{print $3, $2}'\"),"
+            "'uptime':run('uptime -p')},ensure_ascii=False))")
     try:
-        p=subprocess.run(_ssh_base(node)+["python3","-c",script],text=True,capture_output=True,timeout=timeout,check=False)
+        remote_command=shlex.quote("python3 -c " + shlex.quote(script))
+        p=subprocess.run(_ssh_base(node)+[remote_command],text=True,capture_output=True,timeout=timeout,check=False)
         if p.returncode!=0:return {"name":node.name,"host":node.host,"status":"offline","error":(p.stderr or "ssh failed").strip()[:500]}
         payload=json.loads(p.stdout.strip().splitlines()[-1]); return {"name":node.name,"host":node.host,"status":"online",**payload}
     except Exception as exc:return {"name":node.name,"host":node.host,"status":"offline","error":f"{type(exc).__name__}: {exc}"}
