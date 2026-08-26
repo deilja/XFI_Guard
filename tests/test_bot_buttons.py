@@ -13,7 +13,7 @@ def test_main_menu_exposes_compact_operational_controls():
     assert _labels(bot.main_kb()) == {
         "📊 Статус", "🛡 Защита", "🌐 VPN/Xray", "🤖 AI", "🖥 VPS",
         "🌐 Кластер", "🚫 Блокировки", "📋 События", "⚙️ 3X-UI",
-        "🔄 Проверка", "🔄 Обновить", "❓ Помощь",
+        "🔄 Проверка", "🔄 Обновить бота", "❓ Помощь",
     }
 
 
@@ -30,7 +30,7 @@ def test_main_menu_buttons_have_handlers_or_delegates():
 
 def test_no_legacy_main_menu_labels():
     labels = _labels(bot.main_kb())
-    assert not labels.intersection({"🔄 Обновить XFI Guard", "⚡ Принудительное обновление", "🔐 Безопасность"})
+    assert not labels.intersection({"🔄 Обновить XFI Guard", "⚡ Принудительное обновление", "🔐 Безопасность", "🔄 Обновить"})
 
 
 def test_delegated_ui_modules_are_registered_once():
