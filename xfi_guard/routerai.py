@@ -35,7 +35,7 @@ class RouterAIAdapter:
     @classmethod
     def _is_chat_model(cls, model):
         s = str(model or "").lower()
-        return bool(s) and not any(x in s for x in ("embedding", "moderation", "whisper", "tts", "speech", "image", "vision", "audio"))
+        return bool(s) and not any(x in s for x in ("embedding", "moderation", "whisper", "tts", "speech", "image", "vision", "audio", "happyhorse", "sora"))
 
     @classmethod
     def _endpoint_items(cls, data):
@@ -160,6 +160,8 @@ class RouterAIAdapter:
         if not self.configured:
             return None
         candidates = self.ordered_models(allow_paid=allow_paid, preferred=model)
+        if allow_paid and model and self._is_chat_model(model) and model not in candidates:
+            candidates.insert(0, model)
         if not candidates:
             self.last_error = "no RouterAI chat models available"
             return None
