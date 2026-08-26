@@ -9,6 +9,8 @@ from .fail2ban import BAN_SECONDS, ban as fail2ban_ban, banned_ips, jail_active,
 from .firewall import list_blocked_ips, validate_public_ip
 
 STATE_FILE = Path("/var/lib/xfi-guard/defense.json")
+MIN_AI_CONFIDENCE = 0.90
+ALLOWED_AI_RISKS = {"critical"}
 
 
 def _load():
@@ -86,12 +88,49 @@ def confirm_block(ip, actor="admin", reason="manual confirmation", metadata=None
 
 
 def ai_block(ip, risk="critical", confidence=1.0, reason="AI automatic defense", metadata=None):
-    """Block an AI-approved threat without Telegram/admin confirmation."""
+    """Automatically block only an explicitly authorized, high-confidence AI decision.
+
+    The caller must provide a consensus decision record in metadata. A single provider
+    verdict, degraded AI state, or unverified request is rejected.
+    """
+    metadata = dict(metadata or {})
+    normalized_risk = str(risk).lower().strip()
+    try:
+        normalized_confidence = float(confidence)
+    except (TypeError, ValueError):
+        normalized_confidence = -1.0
+
+    consensus = bool(metadata.get("consensus"))
+    providers = metadata.get("providers") or []
+    decision_id = str(metadata.get("decision_id") or "").strip()
+    degraded = bool(metadata.get("degraded"))
+    authorization = str(metadata.get("authorization") or "").strip().lower()
+
+    checks = {
+        "risk": normalized_risk in ALLOWED_AI_RISKS,
+        "confidence": normalized_confidence >= MIN_AI_CONFIDENCE,
+        "consensus": consensus,
+        "providers": len(providers) >= 2,
+        "decision_id": bool(decision_id),
+        "degraded": not degraded,
+        "authorization": authorization == "auto_defense",
+    }
+    if not all(checks.values()):
+        _audit(
+            validate_public_ip(ip),
+            "block_rejected",
+            "ai",
+            "AI automatic defense authorization failed",
+            {**metadata, "checks": checks, "risk": normalized_risk, "confidence": normalized_confidence},
+        )
+        return False, "Автоматическая блокировка отклонена: AI-решение не прошло проверку авторизации."
+
     return _block(ip, "ai", reason, {
-        **(metadata or {}),
-        "risk": str(risk).lower(),
-        "confidence": float(confidence),
+        **metadata,
+        "risk": normalized_risk,
+        "confidence": normalized_confidence,
         "automatic": True,
+        "authorization": "auto_defense",
     })
 
 
