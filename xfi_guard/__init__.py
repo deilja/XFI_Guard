@@ -8,6 +8,18 @@ def _install_ai_analyzer_compat() -> None:
     from .ai import AIAnalyzer
     from .ai_store import load
 
+    def _configured_openrouter():
+        cfg = load()
+        configured_model = str(cfg.get("openrouter_model") or "").strip()
+        configured_models = cfg.get("openrouter_models") or ()
+        if isinstance(configured_models, (list, tuple)):
+            explicit = [str(x).strip() for x in configured_models if str(x).strip()]
+        elif configured_models:
+            explicit = [x.strip() for x in str(configured_models).split(",") if x.strip()]
+        else:
+            explicit = []
+        return configured_model, explicit
+
     def analyze(self, event):
         if isinstance(event, dict):
             result = self.analyze_consensus(event)
@@ -38,15 +50,7 @@ def _install_ai_analyzer_compat() -> None:
     def discover_models(self, force=False):
         result = original_discover(self, force=force)
         try:
-            cfg = load()
-            configured_model = str(cfg.get("openrouter_model") or "").strip()
-            configured_models = cfg.get("openrouter_models") or ()
-            if isinstance(configured_models, (list, tuple)):
-                explicit = [str(x).strip() for x in configured_models if str(x).strip()]
-            elif configured_models:
-                explicit = [x.strip() for x in str(configured_models).split(",") if x.strip()]
-            else:
-                explicit = []
+            configured_model, explicit = _configured_openrouter()
             if configured_model:
                 self.openrouter_model = configured_model
             if explicit:
@@ -59,6 +63,26 @@ def _install_ai_analyzer_compat() -> None:
         return result
 
     AIAnalyzer.discover_models = discover_models
+
+    # status() calls discovery internally; restore explicit OpenRouter settings
+    # in the returned state as well, so discovery can never overwrite admin config.
+    original_status = AIAnalyzer.status
+
+    def status(self):
+        result = original_status(self)
+        try:
+            configured_model, explicit = _configured_openrouter()
+            if configured_model:
+                self.openrouter_model = configured_model
+                result["openrouter_model"] = configured_model
+            if explicit:
+                self.openrouter_models = explicit
+                result["openrouter_models"] = list(explicit)
+        except Exception:
+            pass
+        return result
+
+    AIAnalyzer.status = status
 
 
 _install_ai_analyzer_compat()
