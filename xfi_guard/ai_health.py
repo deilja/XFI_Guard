@@ -34,15 +34,17 @@ def adapt_weights(analyzer=None,min_weight=.25,max_weight=1.5):
 def run_health_check():
     analyzer=AIAnalyzer(); analyzer.reset_health() if hasattr(analyzer,"reset_health") else None
     results=[]; started=time.monotonic()
-    available=set(analyzer.available_providers()) if hasattr(analyzer,"available_providers") else set()
+    available=list(analyzer.available_providers()) if hasattr(analyzer,"available_providers") else []
+    available_set=set(available)
     checked=analyzer.check_all_providers() if hasattr(analyzer,"check_all_providers") else []
-    for provider in PROVIDERS:
+    # Put configured providers first. This keeps the health result useful to callers
+    # that inspect the first result while retaining the full provider report.
+    order=available + [p for p in PROVIDERS if p not in available_set]
+    for provider in order:
         item=next((x for x in checked if x.get("provider")==provider),{})
-        configured=provider in available if hasattr(analyzer,"available_providers") else True
+        configured=provider in available_set if hasattr(analyzer,"available_providers") else True
         model=getattr(analyzer,f"{provider}_model","") if provider!="gemini" else getattr(getattr(analyzer,"gemini",None),"model","")
         if configured and not item and hasattr(analyzer,"_chat_model"):
-            # Compatibility fallback for analyzers that expose only the low-level
-            # chat API. force=True deliberately bypasses normal provider cooldown.
             try:
                 probe=analyzer._chat_model(provider,model,"Reply with exactly {}",json_mode=True,force=True)
                 item={"ok":bool(probe is not None),"latency_ms":0,"error":"" if probe is not None else "empty response"}
