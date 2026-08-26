@@ -29,6 +29,7 @@ def _valid_host(value:str)->bool:
     try:ipaddress.ip_address(value);return True
     except ValueError:return bool(re.fullmatch(r"[A-Za-z0-9_.:-]+",value))
 def _find_node(name):
+    if not name:return None
     for n in load_nodes():
         if n.name==name:return n
     for n in list_configured_nodes():
@@ -51,13 +52,20 @@ def install_node_handlers(dp,admin_ids:set[int]):
         if not ok(m):return
         name=m.text[2:].strip();node=_find_node(name)
         if not node:return await m.answer("❌ VPS не найден.",reply_markup=_menu())
-        x=await asyncio.to_thread(probe_node,node);await state.clear();await state.update_data(detail_node=name);await m.answer(_detail(x),reply_markup=_detail_menu(name))
-    @dp.message(F.text=="🔄 Обновить VPS")
+        await state.clear()
+        await state.update_data(detail_node=name)
+        x=await asyncio.to_thread(probe_node,node)
+        await m.answer(_detail(x),reply_markup=_detail_menu(name))
+    @dp.message(F.text.in_({"🔄 Обновить","🔄 Обновить VPS"}))
     async def detail_refresh(m,state:FSMContext):
         if not ok(m):return
-        data=await state.get_data();node=_find_node(data.get("detail_node"))
-        if not node:return await m.answer("❌ Карточка VPS устарела.",reply_markup=_menu())
-        x=await asyncio.to_thread(probe_node,node);await m.answer(_detail(x),reply_markup=_detail_menu(node.name))
+        data=await state.get_data();name=data.get("detail_node");node=_find_node(name)
+        if not node:
+            await state.clear()
+            return await m.answer("❌ Карточка VPS устарела. Откройте VPS заново через «🖥 VPS узлы».",reply_markup=_menu())
+        x=await asyncio.to_thread(probe_node,node)
+        await state.update_data(detail_node=node.name)
+        await m.answer(_detail(x),reply_markup=_detail_menu(node.name))
     @dp.message(F.text=="♻️ Перезапустить XFI Guard")
     async def restart_start(m,state:FSMContext):
         if not ok(m):return
@@ -73,42 +81,42 @@ def install_node_handlers(dp,admin_ids:set[int]):
         if not ok(m):return
         data=await state.get_data();node=_find_node(data.get("detail_node"));await state.clear()
         if not node:return await m.answer("❌ VPS не найден.",reply_markup=_menu())
-        good,result=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await m.answer(("🟢 " if good else "🔴 ")+result+"\n\n"+_detail(x),reply_markup=_detail_menu(node.name))
+        good,result=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await state.update_data(detail_node=node.name) if False else None;await m.answer(("🟢 " if good else "🔴 ")+result+"\n\n"+_detail(x),reply_markup=_detail_menu(node.name))
     @dp.message(F.text=="⬅️ VPS узлы")
     async def back_nodes(m,state:FSMContext):
         if ok(m):await state.clear();await nodes_menu(m,state)
     @dp.message(F.text.in_({"➕ Добавить VPS","🔐 Добавить по паролю"}))
     async def add_start(m,state:FSMContext):
-        if not ok(m):return
-        await state.clear();await state.update_data(password_mode=m.text=="🔐 Добавить по паролю");await state.set_state(NodeForm.name);await m.answer("➕ Добавление VPS\n\nВведите имя узла, например: vps-de")
+        if not ok(m): return
+        await state.clear(); await state.update_data(password_mode=m.text=="🔐 Добавить по паролю"); await state.set_state(NodeForm.name); await m.answer("➕ Добавление VPS\n\nВведите имя узла, например: vps-de")
     @dp.message(F.text=="🗑 Удалить VPS")
     async def remove_start(m,state:FSMContext):
-        if not ok(m):return
+        if not ok(m): return
         ns=[str(x.get("name")) for x in list_configured_nodes()]
         if not ns:return await m.answer("Нет настроенных VPS.",reply_markup=_menu())
-        await state.clear();await state.update_data(remove_mode=True);await state.set_state(NodeForm.name);await m.answer("Введите имя VPS для удаления:\n\n"+"\n".join(f"• {x}" for x in ns))
+        await state.clear(); await state.update_data(remove_mode=True); await state.set_state(NodeForm.name); await m.answer("Введите имя VPS для удаления:\n\n"+"\n".join(f"• {x}" for x in ns))
     @dp.message(NodeForm.name)
     async def node_name(m,state:FSMContext):
         if not ok(m):return
-        text=(m.text or "").strip();data=await state.get_data()
+        text=(m.text or "").strip(); data=await state.get_data()
         if not text:return await m.answer("❌ Имя VPS не может быть пустым.")
         if data.get("remove_mode"):
-            try:await asyncio.to_thread(remove_node,text);await state.clear();await m.answer("✅ VPS удалён.",reply_markup=_menu())
-            except Exception as e:await state.clear();await m.answer(f"❌ {type(e).__name__}: {e}",reply_markup=_menu())
+            try: await asyncio.to_thread(remove_node,text); await state.clear(); await m.answer("✅ VPS удалён.",reply_markup=_menu())
+            except Exception as e: await state.clear(); await m.answer(f"❌ {type(e).__name__}: {e}",reply_markup=_menu())
             return
-        await state.update_data(name=text);await state.set_state(NodeForm.host);await m.answer("Введите IP или DNS имя VPS.\nМожно указать сразу с портом, например: 2.27.37.78:22")
+        await state.update_data(name=text); await state.set_state(NodeForm.host); await m.answer("Введите IP или DNS имя VPS.\nМожно указать сразу с портом, например: 2.27.37.78:22")
     @dp.message(NodeForm.host)
     async def node_host(m,state:FSMContext):
         if not ok(m):return
-        raw=(m.text or "").strip();host,embedded_port=_normalize_host(raw)
+        raw=(m.text or "").strip(); host,embedded_port=_normalize_host(raw)
         if not host or not _valid_host(host):return await m.answer("❌ Некорректный IP/DNS. Пример: 2.27.37.78 или vps.example.com:22")
-        await state.update_data(host=host,embedded_port=embedded_port);await state.set_state(NodeForm.user);await m.answer("Введите SSH пользователя (по умолчанию root):")
+        await state.update_data(host=host,embedded_port=embedded_port); await state.set_state(NodeForm.user); await m.answer("Введите SSH пользователя (по умолчанию root):")
     @dp.message(NodeForm.user)
     async def node_user(m,state:FSMContext):
         if not ok(m):return
         text=(m.text or "").strip()
         if text and any(c.isspace() for c in text):return await m.answer("❌ Некорректный SSH пользователь.")
-        await state.update_data(user=text or "root");await state.set_state(NodeForm.port);data=await state.get_data();default_port=data.get("embedded_port") or 22;await m.answer(f"Введите SSH порт (по умолчанию {default_port}):")
+        await state.update_data(user=text or "root"); await state.set_state(NodeForm.port); data=await state.get_data(); default_port=data.get("embedded_port") or 22; await m.answer(f"Введите SSH порт (по умолчанию {default_port}):")
     @dp.message(NodeForm.port)
     async def node_port(m,state:FSMContext):
         if not ok(m):return
@@ -116,9 +124,9 @@ def install_node_handlers(dp,admin_ids:set[int]):
         try:port=int((m.text or "").strip() or data.get("embedded_port") or 22)
         except ValueError:return await m.answer("❌ Порт должен быть числом 1..65535.")
         if not 1<=port<=65535:return await m.answer("❌ Порт должен быть 1..65535.")
-        node=Node(name=data["name"],host=data["host"],user=data.get("user","root"),port=port);good,fp=await asyncio.to_thread(host_key_fingerprint,node)
+        node=Node(name=data["name"],host=data["host"],user=data.get("user","root"),port=port); good,fp=await asyncio.to_thread(host_key_fingerprint,node)
         if not good:return await m.answer(f"🟡 Host key не получен:\n{fp}\n\nПроверьте IP/порт и доступность SSH, затем повторите ввод.")
-        await state.update_data(port=port,fingerprint=fp);await state.set_state(NodeForm.hostkey_confirm);await m.answer(f"🔐 SSH host key\n\nVPS: {node.host}:{port}\nED25519: {fp}\n\nПроверьте fingerprint на VPS и подтвердите.",reply_markup=_key_menu())
+        await state.update_data(port=port,fingerprint=fp); await state.set_state(NodeForm.hostkey_confirm); await m.answer(f"🔐 SSH host key\n\nVPS: {node.host}:{port}\nED25519: {fp}\n\nПроверьте fingerprint на VPS и подтвердите.",reply_markup=_key_menu())
     @dp.message(F.text=="❌ Отмена",NodeForm.hostkey_confirm)
     @dp.message(F.text=="❌ Отмена",NodeForm.password)
     @dp.message(F.text=="❌ Отмена",NodeForm.password_confirm)
@@ -127,7 +135,7 @@ def install_node_handlers(dp,admin_ids:set[int]):
     @dp.message(F.text=="✅ Доверять ключу",NodeForm.hostkey_confirm)
     async def confirm_key(m,state:FSMContext):
         if not ok(m):return
-        data=await state.get_data();node=Node(name=data["name"],host=data["host"],user=data.get("user","root"),port=int(data["port"]));good,result=await asyncio.to_thread(enroll_host_key,node)
+        data=await state.get_data(); node=Node(name=data["name"],host=data["host"],user=data.get("user","root"),port=int(data["port"])); good,result=await asyncio.to_thread(enroll_host_key,node)
         if not good:await state.clear();return await m.answer(f"❌ known_hosts: {result}",reply_markup=_menu())
         if data.get("password_mode"):
             await state.set_state(NodeForm.password);return await m.answer("🔑 Введите SSH пароль VPS.\n\nПароль используется только для первичного подключения и не сохраняется.",reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]],resize_keyboard=True,is_persistent=True))
