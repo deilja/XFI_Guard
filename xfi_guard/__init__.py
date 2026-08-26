@@ -8,18 +8,16 @@ def _install_ai_analyzer_compat() -> None:
     from .ai import AIAnalyzer
     from .ai_store import load
 
-    # Consensus remains the path for structured security events. A plain string is
-    # the public direct-analysis API and must return the provider response verbatim.
     def analyze(self, event):
-        self._sync_config()
         if isinstance(event, dict):
-            return self.analyze_consensus(event)
+            result = self.analyze_consensus(event)
+            return result.get("winner", "unknown") if isinstance(result, dict) else "unknown"
 
         prompt = str(event)
         provider = self.provider if self._has_key(self.provider) else ((self.available_providers() or [None])[0])
         if not provider:
             self.last_error = "no AI providers configured"
-            return None
+            return "unknown"
         models = self._models_for(provider)
         model = models[0] if models else ""
         if not model:
@@ -35,9 +33,6 @@ def _install_ai_analyzer_compat() -> None:
 
     AIAnalyzer.analyze = analyze
 
-    # Model discovery is allowed to discover available models, but it must not
-    # silently replace an explicitly configured OpenRouter model/list. This is
-    # especially important during sync and keeps the admin UI deterministic.
     original_discover = AIAnalyzer.discover_models
 
     def discover_models(self, force=False):
@@ -46,12 +41,19 @@ def _install_ai_analyzer_compat() -> None:
             cfg = load()
             configured_model = str(cfg.get("openrouter_model") or "").strip()
             configured_models = cfg.get("openrouter_models") or ()
+            if isinstance(configured_models, (list, tuple)):
+                explicit = [str(x).strip() for x in configured_models if str(x).strip()]
+            elif configured_models:
+                explicit = [x.strip() for x in str(configured_models).split(",") if x.strip()]
+            else:
+                explicit = []
             if configured_model:
                 self.openrouter_model = configured_model
-            if isinstance(configured_models, (list, tuple)):
-                self.openrouter_models = [str(x).strip() for x in configured_models if str(x).strip()]
-            elif configured_models:
-                self.openrouter_models = [x.strip() for x in str(configured_models).split(",") if x.strip()]
+            if explicit:
+                self.openrouter_models = explicit
+                result["openrouter"] = list(explicit)
+            elif configured_model:
+                result["openrouter"] = list(self.openrouter_models)
         except Exception:
             pass
         return result
