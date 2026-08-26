@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -85,7 +86,8 @@ class Handler(BaseHTTPRequestHandler):
         expected = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip()
         if not expected:
             return False
-        return self.headers.get("Authorization", "") == f"Bearer {expected}"
+        supplied = self.headers.get("Authorization", "")
+        return hmac.compare_digest(supplied, f"Bearer {expected}")
 
     def _require_configured(self):
         if not _configured():
