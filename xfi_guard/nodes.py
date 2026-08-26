@@ -49,7 +49,7 @@ def enroll_host_key(node:Node,timeout:int=10)->tuple[bool,str]:
     try:
         p=subprocess.run(cmd,text=True,capture_output=True,timeout=timeout+3,check=False); lines=[x for x in p.stdout.splitlines() if x and not x.startswith("#")]
         if p.returncode!=0 or not lines:return False,(p.stderr or "ssh-keyscan returned no key").strip()[:300]
-        existing=known.read_text(encoding="utf-8",errors="replace'); additions=[x for x in lines if x not in existing]
+        existing=known.read_text(encoding="utf-8",errors="replace"); additions=[x for x in lines if x not in existing]
         if additions:
             with known.open("a",encoding="utf-8") as f:
                 for line in additions:f.write(line+"\n")
