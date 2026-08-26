@@ -12,17 +12,7 @@ def test_normalize_consensus_rejects_provider_count_without_verdicts():
 
 
 def test_normalize_consensus_counts_only_actual_verdicts():
-    result = _normalize_consensus({
-        "providers_used": 4,
-        "models_used": 4,
-        "consensus": True,
-        "confidence": 0.9,
-        "verdicts": [
-            {"provider": "gemini", "model": "gemini-test", "risk": "high", "confidence": 0.9},
-            {"provider": "gemini", "model": "gemini-test", "risk": "high", "confidence": 0.8},
-            {"provider": "groq", "model": "groq-test", "risk": "high", "confidence": 0.9},
-        ],
-    })
+    result = _normalize_consensus({"providers_used": 4, "models_used": 4, "consensus": True, "confidence": 0.9, "verdicts": [{"provider": "gemini", "model": "gemini-test", "risk": "high", "confidence": 0.9}, {"provider": "gemini", "model": "gemini-test", "risk": "high", "confidence": 0.8}, {"provider": "groq", "model": "groq-test", "risk": "high", "confidence": 0.9}]})
     assert result["providers_used"] == 2
     assert result["models_used"] == 2
     assert result["providers"] == ["gemini", "groq"]
