@@ -39,9 +39,9 @@ def blocked_view():
 
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
-    register_alert_callbacks(dp)
+    register_alert_callbacks(dp,None)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
-    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp); install_cluster_handlers(dp,main_kb); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
+    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp); install_cluster_handlers(dp,None,main_kb); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
