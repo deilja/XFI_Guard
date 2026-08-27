@@ -39,12 +39,12 @@ def load(path: str = DEFAULT_PATH) -> dict:
         raw.pop("deepseek_model", None)
         merged = {**defaults.model_dump(), **raw}
 
-        # A saved RouterAI key means the account explicitly opted into
-        # RouterAI. Migrate old configurations that forcibly disabled paid
-        # fallback; the runtime still orders verified free models first.
-        if merged.get("routerai_key"):
+        # Possessing a RouterAI key does not authorize paid models. Paid
+        # inference must be an explicit administrator opt-in.
+        if merged.get("routerai_key") and "routerai_enabled" not in raw:
             merged["routerai_enabled"] = True
-            merged["routerai_allow_paid"] = True
+        if "routerai_allow_paid" not in raw:
+            merged["routerai_allow_paid"] = False
 
         return AISettings.model_validate(merged).model_dump()
     except (OSError, json.JSONDecodeError, ValueError):
@@ -56,9 +56,10 @@ def save(data: dict, path: str = DEFAULT_PATH) -> None:
     data.pop("deepseek_key", None)
     data.pop("deepseek_model", None)
 
-    if data.get("routerai_key"):
+    # A key enables the provider, but never implicitly enables paid inference.
+    if data.get("routerai_key") and "routerai_enabled" not in data:
         data["routerai_enabled"] = True
-        data["routerai_allow_paid"] = True
+    data.setdefault("routerai_allow_paid", False)
 
     settings = AISettings.model_validate(data)
     p = Path(path)
