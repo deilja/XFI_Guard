@@ -1,7 +1,9 @@
 """Risk scoring and defense decisions with Fail2Ban timed blocking."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from .firewall import list_blocked_ips, validate_public_ip
 STATE_FILE = Path("/var/lib/xfi-guard/defense.json")
 MIN_AI_CONFIDENCE = 0.90
 ALLOWED_AI_RISKS = {"critical"}
+DECISION_MAX_AGE = 900
 
 
 def _load():
@@ -87,13 +90,57 @@ def confirm_block(ip, actor="admin", reason="manual confirmation", metadata=None
     return _block(ip, actor, reason, metadata)
 
 
+def _decision_digest(metadata: dict) -> str:
+    payload = {
+        "ip": str(metadata.get("ip", "")),
+        "attempts": int(metadata.get("attempts", 0) or 0),
+        "winner": metadata.get("winner") or metadata.get("risk"),
+        "confidence": metadata.get("confidence"),
+        "providers": sorted(str(p) for p in (metadata.get("providers") or [])),
+        "verdicts": metadata.get("verdicts") or [],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":")).encode()
+    ).hexdigest()[:24]
+
+
+def _decision_id_valid(decision_id: str, metadata: dict) -> bool:
+    match = re.fullmatch(r"ai-(\d+)-([0-9a-f]{24})-[0-9a-f]{8}", decision_id)
+    if not match:
+        return False
+    try:
+        issued = int(match.group(1))
+    except ValueError:
+        return False
+    if abs(datetime.now(timezone.utc).timestamp() - issued) > DECISION_MAX_AGE:
+        return False
+    return hmac_compare(match.group(2), _decision_digest(metadata))
+
+
+def hmac_compare(left: str, right: str) -> bool:
+    """Constant-time comparison kept local to avoid treating IDs as ordinary strings."""
+    import hmac
+    return hmac.compare_digest(left, right)
+
+
+def _decision_already_executed(decision_id: str) -> bool:
+    if not decision_id:
+        return False
+    for item in _load().get("history", []):
+        if item.get("action") == "block" and (item.get("metadata") or {}).get("decision_id") == decision_id:
+            return True
+    return False
+
+
 def ai_block(ip, risk="critical", confidence=1.0, reason="AI automatic defense", metadata=None):
     """Automatically block only an explicitly authorized, high-confidence AI decision.
 
-    The caller must provide a consensus decision record in metadata. A single provider
-    verdict, degraded AI state, or unverified request is rejected.
+    The decision ID is cryptographically bound to the decision inputs and expires
+    after a short window. A decision ID can also be executed only once.
     """
     metadata = dict(metadata or {})
+    normalized_ip = validate_public_ip(ip)
+    metadata.setdefault("ip", normalized_ip)
     normalized_risk = str(risk).lower().strip()
     try:
         normalized_confidence = float(confidence)
@@ -112,12 +159,14 @@ def ai_block(ip, risk="critical", confidence=1.0, reason="AI automatic defense",
         "consensus": consensus,
         "providers": len(providers) >= 2,
         "decision_id": bool(decision_id),
+        "decision_binding": _decision_id_valid(decision_id, {**metadata, "risk": normalized_risk, "confidence": normalized_confidence}),
+        "decision_replay": not _decision_already_executed(decision_id),
         "degraded": not degraded,
         "authorization": authorization == "auto_defense",
     }
     if not all(checks.values()):
         _audit(
-            validate_public_ip(ip),
+            normalized_ip,
             "block_rejected",
             "ai",
             "AI automatic defense authorization failed",
@@ -125,8 +174,9 @@ def ai_block(ip, risk="critical", confidence=1.0, reason="AI automatic defense",
         )
         return False, "Автоматическая блокировка отклонена: AI-решение не прошло проверку авторизации."
 
-    return _block(ip, "ai", reason, {
+    return _block(normalized_ip, "ai", reason, {
         **metadata,
+        "ip": normalized_ip,
         "risk": normalized_risk,
         "confidence": normalized_confidence,
         "automatic": True,
