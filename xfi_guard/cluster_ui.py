@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from aiogram import F
 from aiogram.types import InlineKeyboardButton,InlineKeyboardMarkup
+from .admin_auth import authorized
 from .cluster_status import cluster_summary
 from .nodes import load_nodes,probe_node,restart_guard
 STATE_PATH=Path(os.getenv("XFI_GUARD_CLUSTER_STATE",str(Path.home()/".cache/xfi-guard/cluster-state.json")))
@@ -36,8 +37,7 @@ def _master_diagnostic(exc):
     except TimeoutError:return f"URL: {url}\n🔴 TCP: timeout — узел не отвечает"
     except OSError as e:return f"URL: {url}\n🔴 TCP: недоступен ({e})"
     return f"URL: {url}\n{tcp}\n🔴 HTTP: {type(exc).__name__}: {exc}"
-def _buttons():
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data="cluster:refresh")],[InlineKeyboardButton(text="🖥 VPS-узлы",callback_data="cluster:nodes")],[InlineKeyboardButton(text="🌐 Глобальные блокировки",callback_data="cluster:blocks")],[InlineKeyboardButton(text="⬅️ Главное меню",callback_data="cluster:menu")]])
+def _buttons(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data="cluster:refresh")],[InlineKeyboardButton(text="🖥 VPS-узлы",callback_data="cluster:nodes")],[InlineKeyboardButton(text="🌐 Глобальные блокировки",callback_data="cluster:blocks")],[InlineKeyboardButton(text="⬅️ Главное меню",callback_data="cluster:menu")]])
 def _state_blocks():
     try:return json.loads(STATE_PATH.read_text()).get("blocks",{})
     except (FileNotFoundError,OSError,ValueError):return {}
@@ -51,10 +51,8 @@ def _format_nodes(data):
     for n in nodes:
         s=n.get("status","offline");icon={"online":"🟢","degraded":"🟡","offline":"🔴"}.get(s,"⚪");name=n.get("name") or n.get("hostname") or "-";lines += [f"{icon} {name} — {s.upper()}",f"   heartbeat: {n.get('status_reason','-')} | 🔒 {len(n.get('blocked',[]))}"]
     c=summary["counts"];return "\n".join(lines+["",f"Итого: 🟢 {c['online']}  🟡 {c['degraded']}  🔴 {c['offline']}"])
-def _local_node_data():
-    return [probe_node(n) for n in load_nodes()]
-def _detail(x):
-    return "\n".join([f"🖥 VPS: {x.get('name','—')}","",f"Host: {x.get('host','—')}",f"Status: {str(x.get('status','offline')).upper()}",f"Hostname: {x.get('hostname','—')}",f"XFI Guard: {x.get('xfi_guard','—')}",f"Fail2Ban: {x.get('fail2ban','—')}",f"UFW: {x.get('ufw','—')}",f"Load: {x.get('load','—')}",f"RAM: {x.get('memory','—')}",f"Disk /: {x.get('disk','—')}",f"Uptime: {x.get('uptime','—')}",f"Проверено: {x.get('checked_at','—')}",f"Ошибка: {x.get('error','нет')}"])
+def _local_node_data(): return [probe_node(n) for n in load_nodes()]
+def _detail(x): return "\n".join([f"🖥 VPS: {x.get('name','—')}","",f"Host: {x.get('host','—')}",f"Status: {str(x.get('status','offline')).upper()}",f"Hostname: {x.get('hostname','—')}",f"XFI Guard: {x.get('xfi_guard','—')}",f"Fail2Ban: {x.get('fail2ban','—')}",f"UFW: {x.get('ufw','—')}",f"Load: {x.get('load','—')}",f"RAM: {x.get('memory','—')}",f"Disk /: {x.get('disk','—')}",f"Uptime: {x.get('uptime','—')}",f"Проверено: {x.get('checked_at','—')}",f"Ошибка: {x.get('error','нет')}"])
 def _node_buttons(name,confirm=False):
     if confirm:return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Да, перезапустить",callback_data=f"cluster:restart:{name}")],[InlineKeyboardButton(text="❌ Отмена",callback_data=f"cluster:detail:{name}")]])
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data=f"cluster:detail:{name}")],[InlineKeyboardButton(text="♻️ Перезапустить XFI Guard",callback_data=f"cluster:confirm_restart:{name}")],[InlineKeyboardButton(text="⬅️ Cluster Center",callback_data="cluster:refresh")]])
@@ -70,44 +68,43 @@ def blocks_view():
         ns=x.get("nodes",{}) or {};lines += [f"🚫 {x.get('ip','-')}",f"   Источник: {x.get('source_node','-')}",f"   VPS: {sum(v=='blocked' for v in ns.values())} применено / {sum(v=='queued' for v in ns.values())} в очереди",f"   До: {x.get('until','-')}"]
     return "\n".join(lines+[f"… ещё {len(blocks)-40}"] if len(blocks)>40 else lines)[:3900]
 def install_cluster_handlers(dp,admin_ids:set[int],main_kb):
-    def allowed(u):return bool(u.from_user and u.from_user.id in admin_ids)
+    def allowed(obj): return authorized(obj)
     @dp.message(F.text.in_({"🌐 Кластер","🌐 Cluster Center"}))
     async def cluster_button(m):
         if allowed(m):await m.answer(cluster_view(),reply_markup=_buttons())
     @dp.callback_query(F.data=="cluster:refresh")
     async def refresh(c):
-        if c.from_user.id not in admin_ids:return await c.answer("Нет доступа",show_alert=True)
+        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
         await c.message.edit_text(cluster_view(),reply_markup=_buttons());await c.answer("Кластер обновлён")
     @dp.callback_query(F.data=="cluster:nodes")
     async def nodes(c):
-        if c.from_user.id not in admin_ids:return await c.answer("Нет доступа",show_alert=True)
+        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
         local=await asyncio.to_thread(_local_node_data)
         if local:
-            text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local)
-            await c.message.edit_text(text[:3900],reply_markup=_buttons())
+            text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local);await c.message.edit_text(text[:3900],reply_markup=_buttons())
         else:await c.message.edit_text("🖥 VPS-УЗЛЫ\n\n"+_format_nodes(_request("/nodes")),reply_markup=_buttons())
         await c.answer("VPS-узлы")
     @dp.callback_query(F.data.startswith("cluster:detail:"))
     async def detail(c):
-        if c.from_user.id not in admin_ids:return await c.answer("Нет доступа",show_alert=True)
+        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
         name=c.data.split(":",2)[2];node=next((n for n in load_nodes() if n.name==name),None)
         if not node:return await c.answer("VPS не найден",show_alert=True)
         x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(_detail(x),reply_markup=_node_buttons(name));await c.answer("Обновлено")
     @dp.callback_query(F.data.startswith("cluster:confirm_restart:"))
     async def confirm_restart(c):
-        if c.from_user.id not in admin_ids:return await c.answer("Нет доступа",show_alert=True)
+        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
         name=c.data.split(":",2)[2];await c.message.edit_text(f"⚠️ Подтвердите перезапуск XFI Guard на VPS {name}.\n\nВыполнится только:\nsudo -n systemctl restart xfi-guard.service",reply_markup=_node_buttons(name,True));await c.answer()
     @dp.callback_query(F.data.startswith("cluster:restart:"))
     async def restart(c):
-        if c.from_user.id not in admin_ids:return await c.answer("Нет доступа",show_alert=True)
+        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
         name=c.data.split(":",2)[2];node=next((n for n in load_nodes() if n.name==name),None)
         if not node:return await c.answer("VPS не найден",show_alert=True)
         ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),reply_markup=_node_buttons(name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
     @dp.callback_query(F.data=="cluster:blocks")
     async def blocks(c):
-        if c.from_user.id not in admin_ids:return await c.answer("Нет доступа",show_alert=True)
+        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
         await c.message.edit_text(blocks_view(),reply_markup=_buttons());await c.answer("Глобальные блокировки")
     @dp.callback_query(F.data=="cluster:menu")
     async def menu(c):
-        if c.from_user.id not in admin_ids:return await c.answer("Нет доступа",show_alert=True)
+        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
         await c.message.edit_text("🏠 Главное меню\n\nВыберите раздел в нижнем меню.");await c.answer()
