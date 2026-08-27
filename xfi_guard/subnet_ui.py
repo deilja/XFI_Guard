@@ -10,6 +10,9 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 from .subnet_blocker import block_subnet, list_blocked_subnets, unblock_subnet
 
 
+BACK_TEXT = "⬅️ Главное меню"
+
+
 class SubnetStates(StatesGroup):
     block = State()
     unblock = State()
@@ -21,7 +24,7 @@ def subnet_menu():
             [KeyboardButton(text="➕ Заблокировать подсеть")],
             [KeyboardButton(text="➖ Разблокировать подсеть")],
             [KeyboardButton(text="📋 Подсети в блокировке")],
-            [KeyboardButton(text="⬅️ Главное меню")],
+            [KeyboardButton(text=BACK_TEXT)],
         ], resize_keyboard=True, is_persistent=True,
     )
 
@@ -42,6 +45,10 @@ def install_subnet_handlers(dp, admin_ids, main_kb):
         if not message.from_user or message.from_user.id not in admin_ids:
             return
         value = (message.text or "").strip()
+        if value == BACK_TEXT:
+            await state.clear()
+            await message.answer("🏠 Главное меню", reply_markup=main_kb())
+            return
         try:
             network = ipaddress.ip_network(value, strict=False)
             if network.version != 4 or network.prefixlen < 24 or not network.is_global:
@@ -66,6 +73,10 @@ def install_subnet_handlers(dp, admin_ids, main_kb):
         if not message.from_user or message.from_user.id not in admin_ids:
             return
         value = (message.text or "").strip()
+        if value == BACK_TEXT:
+            await state.clear()
+            await message.answer("🏠 Главное меню", reply_markup=main_kb())
+            return
         try:
             network = ipaddress.ip_network(value, strict=False)
             if network.version != 4 or network.prefixlen < 24 or not network.is_global:
