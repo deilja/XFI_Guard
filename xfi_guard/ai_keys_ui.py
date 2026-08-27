@@ -30,16 +30,23 @@ def _mask(value: str) -> str:
     return value[:4] + "••••••••" + value[-4:]
 
 
+async def _delete_secret_message(message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        # Telegram may reject deletion because of permissions, age, or chat type.
+        # Never expose the key in a replacement message.
+        pass
+
+
 def install_ai_key_handlers(dp: Dispatcher) -> None:
-    if getattr(dp, "_xfi_ai_keys_installed", False):
-        return
+    if getattr(dp, "_xfi_ai_keys_installed", False): return
     dp._xfi_ai_keys_installed = True
 
     @dp.message(F.text == "🔑 API ключи")
     async def keys_menu(message, state: FSMContext):
         if not _admin(message): return
-        await state.clear()
-        cfg = load()
+        await state.clear(); cfg = load()
         await message.answer(
             "🔑 API КЛЮЧИ\n\nКлючи хранятся локально в /var/lib/xfi-guard/ai.json с правами 600.\n\n"
             f"🟣 Gemini: {_mask(cfg.get('gemini_key') or os.getenv('GEMINI_API_KEY', ''))}\n"
@@ -51,14 +58,12 @@ def install_ai_key_handlers(dp: Dispatcher) -> None:
 
     async def ask_key(message, state: FSMContext, provider: str):
         if not _admin(message): return
-        await state.set_state(AIKeyState.waiting)
-        await state.update_data(provider=provider)
-        await message.answer(f"🔑 {provider.upper()} API\n\nОтправьте API key одним сообщением.\nОн сохранится локально и будет проверен при выборе модели.\n\nДля отмены: ⬅️ AI", reply_markup=_kb([["⬅️ AI"]]))
+        await state.set_state(AIKeyState.waiting); await state.update_data(provider=provider)
+        await message.answer(f"🔑 {provider.upper()} API\n\nОтправьте API key одним сообщением.\nПосле сохранения это сообщение будет удалено, если Telegram разрешит удаление.\n\nДля отмены: ⬅️ AI", reply_markup=_kb([["⬅️ AI"]]))
 
     for label, provider in (("🔑 Gemini", "gemini"), ("🔑 Groq", "groq"), ("🔑 OpenRouter", "openrouter"), ("🔑 RouterAI", "routerai")):
         @dp.message(F.text == label)
-        async def provider_key(message, state, _provider=provider):
-            await ask_key(message, state, _provider)
+        async def provider_key(message, state, _provider=provider): await ask_key(message, state, _provider)
 
     @dp.message(AIKeyState.waiting)
     async def receive_key(message, state: FSMContext):
@@ -68,5 +73,13 @@ def install_ai_key_handlers(dp: Dispatcher) -> None:
         data = await state.get_data(); provider = data.get("provider")
         if provider not in {"gemini", "groq", "openrouter", "routerai"}:
             await state.clear(); return
-        cfg = load(); cfg[f"{provider}_key"] = text; save(cfg); await state.clear()
-        await message.answer(f"✅ {provider.upper()} API key сохранён.\n\nОткройте 🧩 API модели для выбора и проверки модели.", reply_markup=_kb([["🔑 API ключи", "🧩 API модели"], ["⬅️ AI"]]))
+        cfg = load(); cfg[f"{provider}_key"] = text
+        try:
+            save(cfg)
+        except Exception:
+            await state.clear(); await _delete_secret_message(message)
+            await message.answer("❌ Не удалось сохранить API key. Исходное сообщение с ключом удалено, если Telegram разрешил удаление.", reply_markup=_kb([["🔑 API ключи", "🧩 API модели"], ["⬅️ AI"]]))
+            return
+        await state.clear()
+        await _delete_secret_message(message)
+        await message.answer(f"✅ {provider.upper()} API key сохранён. Исходное сообщение с ключом удалено, если Telegram разрешил удаление.\n\nОткройте 🧩 API модели для выбора и проверки модели.", reply_markup=_kb([["🔑 API ключи", "🧩 API модели"], ["⬅️ AI"]]))
