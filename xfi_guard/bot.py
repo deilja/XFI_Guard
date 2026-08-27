@@ -6,6 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from .admin_auth import admin_ids, authorized
 from .ai_ui import install_ai_handlers
 from .ai_center import install_ai_center_handlers, ai_center_menu
 from .ai_model_manager import install_ai_model_manager
@@ -22,37 +23,26 @@ from .vpn import collect_vpn_checks
 from .nodes_ui import install_node_handlers
 from .cluster_ui import install_cluster_handlers
 from .vps_ui import install_vps_handlers
-from .subnet_ui import install_subnet_handlers, subnet_menu
+from .subnet_ui import install_subnet_handlers
 
-ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
-def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
+ADMIN_IDS=admin_ids()
+def admin(message): return authorized(message)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-
-def main_kb():
-    return kb([
-        ["📊 Статус","🛡 Защита","🌐 VPN/Xray"],
-        ["🤖 AI","🖥 VPS","🌐 Кластер"],
-        ["🚫 Блокировки","📋 События","⚙️ 3X-UI"],
-        ["🔄 Проверка","🔄 Обновить бота","❓ Помощь"],
-    ])
-
+def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS","🌐 Кластер"],["🚫 Блокировки","📋 События","⚙️ 3X-UI"],["🔄 Проверка","🔄 Обновить бота","❓ Помощь"]])
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def blocked_view():
     try:
-        ips=list_blocked_ips(); lines=["🛡 АКТИВНЫЕ БЛОКИРОВКИ","",f"Всего: {len(ips)}","Срок автоматической блокировки: 7 дней","Backend: Fail2Ban + UFW","", "IP:"]
-        lines.extend(f"• {ip}" for ip in ips[:100])
+        ips=list_blocked_ips(); lines=["🛡 АКТИВНЫЕ БЛОКИРОВКИ","",f"Всего: {len(ips)}","Срок автоматической блокировки: 7 дней","Backend: Fail2Ban + UFW","", "IP:"]; lines.extend(f"• {ip}" for ip in ips[:100]);
         if len(ips)>100: lines.append(f"… ещё {len(ips)-100} IP")
         if not ips: lines.append("• нет активных публичных IP-блокировок")
         return "\n".join(lines)[:3900]
-    except Exception as exc: return f"❌ Не удалось получить список блокировок: {type(exc).__name__}: {exc}"
+    except Exception: return "❌ Не удалось получить список блокировок. Подробности записаны в журнал."
 
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
     register_alert_callbacks(dp,ADMIN_IDS)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
-    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb); install_vps_handlers(dp, main_kb)
-    install_subnet_handlers(dp, ADMIN_IDS, main_kb)
-
+    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, ADMIN_IDS, main_kb)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
@@ -83,7 +73,7 @@ def build_dispatcher():
     async def events_button(message):
         if not admin(message): return
         try: p=subprocess.run(["journalctl","-u","xfi-guard","-u","xfi-guard-bot","-n","25","--no-pager"],text=True,capture_output=True,timeout=8,check=False); text=(p.stdout or p.stderr).strip()[-2600:] or "Событий нет."
-        except Exception as exc: text=f"❌ Не удалось получить события: {type(exc).__name__}: {exc}"
+        except Exception: text="❌ Не удалось получить события."
         await message.answer("📋 Последние события\n\n"+text,reply_markup=main_kb())
     @dp.message(F.text=="🤖 AI")
     async def ai_button(message):
@@ -93,8 +83,7 @@ def build_dispatcher():
     @dp.message(F.text=="🔄 Обновить бота")
     async def update_button(message):
         if admin(message):
-            await message.answer("⏳ Запускаю безопасное обновление XFI Guard...")
-            subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            await message.answer("⏳ Запускаю безопасное обновление XFI Guard..."); subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     @dp.message(F.text=="❓ Помощь")
     async def help_button(message):
         if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — меню VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты",reply_markup=main_kb())
