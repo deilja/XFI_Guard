@@ -22,6 +22,7 @@ from .vpn import collect_vpn_checks
 from .nodes_ui import install_node_handlers
 from .cluster_ui import install_cluster_handlers
 from .vps_ui import install_vps_handlers
+from .subnet_ui import install_subnet_handlers, subnet_menu
 
 ADMIN_IDS={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}
 def admin(message): return bool(message.from_user and message.from_user.id in ADMIN_IDS)
@@ -50,6 +51,7 @@ def build_dispatcher():
     register_alert_callbacks(dp,ADMIN_IDS)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
     install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb); install_vps_handlers(dp, main_kb)
+    install_subnet_handlers(dp, ADMIN_IDS, main_kb)
 
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
@@ -76,7 +78,7 @@ def build_dispatcher():
         if admin(message): await message.answer("🌐 VPN/Xray\n\n"+results(collect_vpn_checks()),reply_markup=main_kb())
     @dp.message(F.text=="🚫 Блокировки")
     async def blocks_button(message):
-        if admin(message): await message.answer(blocked_view()+"\n\nДля ручного управления откройте «🛡 Защита».",reply_markup=main_kb())
+        if admin(message): await message.answer(blocked_view()+"\n\nВыберите управление подсетями или IP в разделе «🛡 Защита».",reply_markup=main_kb())
     @dp.message(F.text=="📋 События")
     async def events_button(message):
         if not admin(message): return
