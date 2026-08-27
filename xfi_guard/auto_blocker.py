@@ -22,7 +22,7 @@ class AutoBlocker:
     @staticmethod
     def _decision_id(ip:str,analysis:dict,attempts:int)->str:
         payload={"ip":ip,"attempts":attempts,"winner":analysis.get("winner"),"confidence":analysis.get("confidence"),"providers":sorted(str(p) for p in (analysis.get("providers") or [])),"verdicts":analysis.get("verdicts") or []}
-        digest=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False,default=str).encode()).hexdigest()[:24]
+        digest=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False,default=str,separators=(",", ":")).encode()).hexdigest()[:24]
         return f"ai-{int(time.time())}-{digest}-{uuid.uuid4().hex[:8]}"
     def evaluate(self,events):
         grouped={}
@@ -42,7 +42,7 @@ class AutoBlocker:
             analysis=analysis if isinstance(analysis,dict) else {}
             risk=str(analysis.get("winner","unknown")).lower(); confidence=float(analysis.get("confidence",0) or 0); providers=[str(p) for p in (analysis.get("providers") or []) if str(p).strip()]; providers_used=int(analysis.get("providers_used",len(providers)) or 0); consensus=bool(analysis.get("consensus")); degraded=bool(analysis.get("degraded",False)) or providers_used<self.min_providers; decision_id=self._decision_id(ip,analysis,attempts)
             reason=next((x.get("reason","") for x in analysis.get("verdicts",[]) if x.get("risk")==risk),"") or "AI analysis"
-            decision={"decision_id":decision_id,"ip":ip,"attempts":attempts,"risk":risk,"confidence":confidence,"consensus":consensus,"providers_used":providers_used,"providers":providers,"degraded":degraded,"authorization":"auto_defense","analysis_mode":("full_consensus" if providers_used>=3 else "partial_consensus" if providers_used>=2 else "fallback" if providers_used==1 else "unavailable"),"reason":reason,"action":"none"}
+            decision={"decision_id":decision_id,"ip":ip,"attempts":attempts,"risk":risk,"confidence":confidence,"consensus":consensus,"providers_used":providers_used,"providers":providers,"degraded":degraded,"authorization":"auto_defense","analysis_mode":("full_consensus" if providers_used>=3 else "partial_consensus" if providers_used>=2 else "fallback" if providers_used==1 else "unavailable"),"reason":reason,"action":"none","winner":analysis.get("winner"),"verdicts":analysis.get("verdicts") or []}
             self.db.log_event("ssh_ai_check",ip,reason,reason,confidence,attempts)
             if self.enabled and consensus and providers_used>=self.min_providers and not degraded and risk=="critical" and confidence>=self.confidence:
                 ok,message=ai_block(ip,risk=risk,confidence=confidence,reason="AI automatic SSH threat blocking",metadata=decision); decision["action"]="blocked" if ok else "block_failed"; decision["message"]=message; self.db.log_event("auto_block",ip,message,reason,confidence,attempts)
