@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import socket
 import time
 import urllib.error
@@ -67,6 +68,7 @@ def heartbeat() -> dict:
         "node": NODE_NAME,
         "node_id": _node_id(),
         "timestamp": time.time(),
+        "nonce": secrets.token_urlsafe(24),
         "hostname": socket.gethostname(),
         "blocked": _local_blocked(),
     }
@@ -87,11 +89,12 @@ def heartbeat() -> dict:
 def apply_block(ip: str, until: int) -> bool:
     import subprocess
     bantime = max(60, until - int(time.time()))
-    p = subprocess.run(["sudo", "fail2ban-client", "set", "xfi-guard", "banip", ip], capture_output=True, text=True, timeout=15, check=False)
-    if p.returncode != 0:
+    base = ["sudo", "fail2ban-client", "set", "xfi-guard"]
+    configure = subprocess.run(base + ["bantime", str(bantime)], capture_output=True, text=True, timeout=15, check=False)
+    if configure.returncode != 0:
         return False
-    subprocess.run(["sudo", "fail2ban-client", "set", "xfi-guard", "bantime", str(bantime)], capture_output=True, text=True, timeout=15, check=False)
-    return True
+    p = subprocess.run(base + ["banip", ip], capture_output=True, text=True, timeout=15, check=False)
+    return p.returncode == 0
 
 
 def run() -> None:
@@ -100,9 +103,17 @@ def run() -> None:
             result = heartbeat()
             STATE.parent.mkdir(parents=True, exist_ok=True)
             STATE.write_text(json.dumps({"last_ok": time.time(), "commands": result.get("commands", []), "applied": result.get("applied", [])}))
+            try:
+                STATE.chmod(0o600)
+            except OSError:
+                pass
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
             STATE.parent.mkdir(parents=True, exist_ok=True)
             STATE.write_text(json.dumps({"last_error": f"{type(exc).__name__}: {exc}", "last_attempt": time.time()}))
+            try:
+                STATE.chmod(0o600)
+            except OSError:
+                pass
         time.sleep(INTERVAL)
 
 
