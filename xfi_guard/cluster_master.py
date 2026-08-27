@@ -10,23 +10,30 @@ from .cluster_policy import evaluate
 from .threat_intel import active
 STATE_PATH=Path(os.getenv("XFI_GUARD_CLUSTER_STATE",str(Path.home()/".cache/xfi-guard/cluster-state.json")))
 NODES:dict[str,dict]={};COMMANDS:dict[str,list[dict]]={};BLOCKS:dict[str,dict]={};LOCK=threading.RLock();HEARTBEAT_TTL=90
+
 def _load():
     try:data=json.loads(STATE_PATH.read_text())
     except (FileNotFoundError,ValueError,OSError):return
     with LOCK: COMMANDS.update(data.get("commands",{}));BLOCKS.update(data.get("blocks",{}))
+
 def _save():
-    try: STATE_PATH.parent.mkdir(parents=True,exist_ok=True); tmp=STATE_PATH.with_suffix(".tmp");tmp.write_text(json.dumps({"commands":COMMANDS,"blocks":BLOCKS},ensure_ascii=False,indent=2));os.replace(tmp,STATE_PATH)
+    try:
+        STATE_PATH.parent.mkdir(parents=True,exist_ok=True); tmp=STATE_PATH.with_suffix(".tmp");tmp.write_text(json.dumps({"commands":COMMANDS,"blocks":BLOCKS},ensure_ascii=False,indent=2));os.replace(tmp,STATE_PATH);STATE_PATH.chmod(0o600)
     except OSError:
-        fallback=Path.home()/".cache/xfi-guard/cluster-state.json";fallback.parent.mkdir(parents=True,exist_ok=True);tmp=fallback.with_suffix(".tmp");tmp.write_text(json.dumps({"commands":COMMANDS,"blocks":BLOCKS},ensure_ascii=False,indent=2));os.replace(tmp,fallback)
+        fallback=Path.home()/".cache/xfi-guard/cluster-state.json";fallback.parent.mkdir(parents=True,exist_ok=True);tmp=fallback.with_suffix(".tmp");tmp.write_text(json.dumps({"commands":COMMANDS,"blocks":BLOCKS},ensure_ascii=False,indent=2));os.replace(tmp,fallback);fallback.chmod(0o600)
+
 def _json(handler,code,payload):
     body=json.dumps(payload,ensure_ascii=False).encode();handler.send_response(code);handler.send_header("Content-Type","application/json");handler.send_header("Cache-Control","no-store");handler.send_header("Content-Length",str(len(body)));handler.end_headers();handler.wfile.write(body)
+
 def _command_id(ip,until):return hashlib.sha256(f"{ip}|{int(until)}".encode()).hexdigest()[:24]
 def _prune_expired(now=None):
     now=time.time() if now is None else now;expired=[ip for ip,item in BLOCKS.items() if float(item.get("until",0))<=now]
     for ip in expired:BLOCKS.pop(ip,None)
     return expired
+
 def _node_secret(node):return os.getenv(f"XFI_GUARD_NODE_SECRET_{node}","") or os.getenv("XFI_GUARD_CLUSTER_SECRET","")
 def _configured():return bool(os.getenv("XFI_GUARD_CLUSTER_TOKEN","").strip() and os.getenv("XFI_GUARD_CLUSTER_SECRET","").strip())
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args):return
     def _body(self):
@@ -35,8 +42,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode())
     def _auth(self):
         expected=os.getenv("XFI_GUARD_CLUSTER_TOKEN","").strip()
-        if not expected:return False
-        return hmac.compare_digest(self.headers.get("Authorization",""),f"Bearer {expected}")
+        return bool(expected) and hmac.compare_digest(self.headers.get("Authorization",""),f"Bearer {expected}")
     def _require_configured(self):
         if not _configured():_json(self,503,{"error":"cluster authentication is not configured"});return False
         return True
@@ -61,7 +67,9 @@ class Handler(BaseHTTPRequestHandler):
                     _prune_expired(now);_save()
                 return _json(self,200,{"ok":True,"commands":commands,"server_time":now})
             if self.path=="/threat":
-                secret=os.getenv("XFI_GUARD_CLUSTER_SECRET","");signature=str(payload.get("signature",""));signed_payload=dict(payload);signed_payload.pop("signature",None);item=accept_event(signed_payload,signature,secret);source_node=str(signed_payload.get("node","unknown"));decision=evaluate(item.get("score",0),item.get("risk","low"),len(item.get("origin_nodes",[])),require_two_nodes=False);blocked_nodes=[]
+                secret=os.getenv("XFI_GUARD_CLUSTER_SECRET","");signature=str(payload.get("signature",""));signed_payload=dict(payload);signed_payload.pop("signature",None);item=accept_event(signed_payload,signature,secret)
+                source_node=str(signed_payload.get("node","unknown"));origin_nodes=set(item.get("origin_nodes",[]));origin_nodes.add(source_node)
+                decision=evaluate(item.get("score",0),item.get("risk","low"),len(origin_nodes),require_two_nodes=True);blocked_nodes=[]
                 if decision.allowed:
                     until=time.time()+604800;cid=_command_id(item["ip"],until)
                     with LOCK:
@@ -75,9 +83,10 @@ class Handler(BaseHTTPRequestHandler):
                     event=dict(item);event.update({"source_node":source_node,"until":until,"confidence":signed_payload.get("confidence","-"),"providers":signed_payload.get("providers","-")})
                     try:notify_global_block_sync(event,blocked_nodes)
                     except Exception:pass
-                return _json(self,200,{"ok":True,"threat":item,"global_block":decision.allowed,"blocked_nodes":blocked_nodes})
+                return _json(self,200,{"ok":True,"threat":item,"global_block":decision.allowed,"blocked_nodes":blocked_nodes,"reason":decision.reason})
             return _json(self,404,{"error":"not found"})
-        except Exception as exc:return _json(self,400,{"error":str(exc)})
+        except (ValueError,KeyError,TypeError) as exc:return _json(self,400,{"error":str(exc)})
+        except Exception:return _json(self,500,{"error":"internal cluster error"})
     def do_GET(self):
         if not self._require_configured():return
         if not self._auth():return _json(self,401,{"error":"unauthorized"})
@@ -92,6 +101,7 @@ class Handler(BaseHTTPRequestHandler):
             ip=self.path.removeprefix("/block/");
             with LOCK:_prune_expired(now);return _json(self,200,BLOCKS.get(ip,{"ip":ip,"nodes":{}}))
         return _json(self,404,{"error":"not found"})
+
 def main():
     _load();host=os.getenv("XFI_GUARD_CLUSTER_HOST","127.0.0.1");port=int(os.getenv("XFI_GUARD_CLUSTER_PORT","8765"));ThreadingHTTPServer((host,port),Handler).serve_forever()
 if __name__=="__main__":main()
