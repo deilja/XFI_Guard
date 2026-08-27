@@ -1,14 +1,14 @@
 """AI Center: health, synchronization and consensus diagnostics for XFI Guard."""
 from __future__ import annotations
-import asyncio, os
+import asyncio
 from aiogram import Dispatcher, F
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from .admin_auth import authorized
 from .ai import AIAnalyzer, PROVIDERS
 from .ai_health import run_health_check, snapshot
 from .ai_store import load, save
 
-def _admin(message):
-    ids={int(v) for v in os.getenv("XFI_GUARD_ADMIN_IDS","").split(",") if v.strip().isdigit()}; return bool(message.from_user and message.from_user.id in ids)
+def _admin(message): return authorized(message)
 def _kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
 def ai_center_menu(): return _kb([["🩺 Здоровье AI","🧪 Проверить все AI"],["🔑 API ключи","🧩 API модели"],["📊 Консенсус AI","🔄 Синхронизация AI"],["🧹 Сброс здоровья AI"],["⬅️ Главное меню"]])
 def build_health_report(data):
@@ -25,7 +25,6 @@ def consensus_report(status):
     if health:
         lines += ["","Последние проверки:"]; lines += [f"• {k}: {v.get('success_rate',0):.0%}, ошибок {v.get('errors',0)}" for k,v in list(health.items())[-8:]]
     return "\n".join(lines)[:3900]
-
 def install_ai_center_handlers(dp:Dispatcher)->None:
     if getattr(dp,"_xfi_ai_center_handlers_installed",False): return
     dp._xfi_ai_center_handlers_installed=True
@@ -34,20 +33,20 @@ def install_ai_center_handlers(dp:Dispatcher)->None:
         if not _admin(m): return
         await m.answer("⏳ Проверяю Gemini, Groq, OpenRouter и RouterAI...")
         try: await m.answer(build_health_report(await asyncio.to_thread(run_health_check)),reply_markup=ai_center_menu())
-        except Exception as exc: await m.answer(f"❌ AI health: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
+        except Exception: await m.answer("❌ Проверка AI завершилась ошибкой. Подробности записаны в журнал.",reply_markup=ai_center_menu())
     @dp.message(F.text=="🧪 Проверить все AI")
     async def check_all(m):
         if not _admin(m): return
         await m.answer("⏳ Реальная проверка API Gemini, Groq, OpenRouter и RouterAI...")
         try: await m.answer(build_health_report(await asyncio.to_thread(run_health_check)),reply_markup=ai_center_menu())
-        except Exception as exc: await m.answer(f"❌ Проверка AI: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
+        except Exception: await m.answer("❌ Проверка AI завершилась ошибкой. Подробности записаны в журнал.",reply_markup=ai_center_menu())
     @dp.message(F.text=="🔄 Синхронизация AI")
     async def sync(m):
         if not _admin(m): return
         try:
             analyzer=AIAnalyzer(); analyzer.sync(); status=analyzer.status(); cfg=load(); cfg.update({"provider":status["selected_provider"],"openrouter_model":status["openrouter_model"],"openrouter_models":tuple(status["openrouter_models"]),"routerai_model":status.get("routerai_model",""),"routerai_models":tuple(status.get("routerai_models") or [])}); save(cfg)
             await m.answer("🔄 AI синхронизирован\n\n"+f"Доступны по ключу: {', '.join(status['available_providers']) or 'нет'}\n"+f"Gemini: {status['gemini_model']}\n"+f"Groq: {status['groq_model']}\n"+f"OpenRouter: {status['openrouter_model']}\n"+f"RouterAI: {status.get('routerai_model') or 'не выбран'}\n"+f"RouterAI моделей: {len(status.get('routerai_models') or [])}\n"+f"Платный fallback: {'включён' if status.get('routerai_allow_paid') else 'выключен'}",reply_markup=ai_center_menu())
-        except Exception as exc: await m.answer(f"❌ Синхронизация AI: {type(exc).__name__}: {exc}",reply_markup=ai_center_menu())
+        except Exception: await m.answer("❌ Синхронизация AI завершилась ошибкой. Подробности записаны в журнал.",reply_markup=ai_center_menu())
     @dp.message(F.text=="📊 Консенсус AI")
     async def consensus(m):
         if _admin(m): await m.answer(consensus_report(AIAnalyzer().status()),reply_markup=ai_center_menu())
