@@ -1,11 +1,11 @@
 """Regression tests for XFI Guard Cluster Master/Node authentication."""
 
-import json
+import importlib
 import time
 
 import pytest
 
-from xfi_guard.cluster_auth import sign_heartbeat
+from xfi_guard.cluster_auth import sign_heartbeat, verify_heartbeat
 
 
 def test_heartbeat_signature_is_deterministic():
@@ -41,9 +41,25 @@ def test_heartbeat_signature_changes_when_secret_changes():
     assert sign_heartbeat(payload, "secret-a") != sign_heartbeat(payload, "secret-b")
 
 
+def test_heartbeat_requires_nonce_and_rejects_replay():
+    payload = {"node": "ger", "node_id": "node-1", "timestamp": time.time(), "nonce": "nonce-1"}
+    signature = sign_heartbeat(payload, "secret")
+    assert verify_heartbeat(payload, signature, "secret") is True
+    assert verify_heartbeat(payload, signature, "secret") is False
+
+
+def test_heartbeat_rejects_stale_timestamp():
+    payload = {"node": "ger", "node_id": "node-1", "timestamp": time.time() - 1000, "nonce": "nonce-stale"}
+    assert verify_heartbeat(payload, sign_heartbeat(payload, "secret"), "secret", max_age=120) is False
+
+
+def test_heartbeat_rejects_invalid_signature():
+    payload = {"node": "ger", "node_id": "node-1", "timestamp": time.time(), "nonce": "nonce-invalid"}
+    assert verify_heartbeat(payload, "bad", "secret") is False
+
+
 def test_node_module_requires_secret(monkeypatch):
     monkeypatch.setenv("XFI_GUARD_CLUSTER_SECRET", "")
-    import importlib
     import xfi_guard.cluster_node as node
     node = importlib.reload(node)
     with pytest.raises(RuntimeError, match="SECRET is not configured"):
@@ -53,7 +69,6 @@ def test_node_module_requires_secret(monkeypatch):
 def test_node_module_builds_authenticated_heartbeat(monkeypatch):
     monkeypatch.setenv("XFI_GUARD_CLUSTER_SECRET", "test-secret")
     monkeypatch.setenv("XFI_GUARD_CLUSTER_TOKEN", "test-token")
-    import importlib
     import xfi_guard.cluster_node as node
     node = importlib.reload(node)
 
@@ -74,6 +89,7 @@ def test_node_module_builds_authenticated_heartbeat(monkeypatch):
     assert payload["node"]
     assert payload["node_id"]
     assert payload["blocked"] == ["1.2.3.4"]
+    assert payload["nonce"]
     assert payload["signature"] == sign_heartbeat(
         {k: v for k, v in payload.items() if k != "signature"},
         "test-secret",
@@ -82,7 +98,6 @@ def test_node_module_builds_authenticated_heartbeat(monkeypatch):
 
 def test_cluster_ui_default_master_url_is_local(monkeypatch):
     monkeypatch.delenv("XFI_GUARD_CLUSTER_MASTER_URL", raising=False)
-    import importlib
     import xfi_guard.cluster_ui as ui
     ui = importlib.reload(ui)
     assert ui._master_url() == "http://127.0.0.1:8765"
@@ -90,7 +105,6 @@ def test_cluster_ui_default_master_url_is_local(monkeypatch):
 
 def test_cluster_ui_uses_configured_master_url(monkeypatch):
     monkeypatch.setenv("XFI_GUARD_CLUSTER_MASTER_URL", "http://10.70.0.1:8765/")
-    import importlib
     import xfi_guard.cluster_ui as ui
     ui = importlib.reload(ui)
     assert ui._master_url() == "http://10.70.0.1:8765"
