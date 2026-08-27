@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
-from .admin_auth import admin_ids, authorized
+from .admin_auth import authorized
 from .ai_ui import install_ai_handlers
 from .ai_center import install_ai_center_handlers, ai_center_menu
 from .ai_model_manager import install_ai_model_manager
@@ -25,7 +25,6 @@ from .cluster_ui import install_cluster_handlers
 from .vps_ui import install_vps_handlers
 from .subnet_ui import install_subnet_handlers
 
-ADMIN_IDS=admin_ids()
 def admin(message): return authorized(message)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
 def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS","🌐 Кластер"],["🚫 Блокировки","📋 События","⚙️ 3X-UI"],["🔄 Проверка","🔄 Обновить бота","❓ Помощь"]])
@@ -40,9 +39,9 @@ def blocked_view():
 
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
-    register_alert_callbacks(dp,ADMIN_IDS)
+    register_alert_callbacks(dp)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
-    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp,ADMIN_IDS); install_cluster_handlers(dp,ADMIN_IDS,main_kb); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, ADMIN_IDS, main_kb)
+    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp); install_cluster_handlers(dp,main_kb); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
