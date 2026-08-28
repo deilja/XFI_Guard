@@ -17,7 +17,7 @@ def _valid_network(value):
         if network.version!=4 or network.prefixlen<24 or not network.is_global: return None
         return network.with_prefixlen
     except ValueError:return None
-def install_subnet_handlers(dp,admin_ids,main_kb):
+def install_subnet_handlers(dp,main_kb):
     @dp.message(F.text=="➕ Заблокировать подсеть")
     async def subnet_block_start(message,state:FSMContext):
         if not authorized(message):return
