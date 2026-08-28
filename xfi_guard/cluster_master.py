@@ -2,14 +2,17 @@
 from __future__ import annotations
 import hashlib,hmac,json,os,threading,time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
-from pathlib import Path
 from .cluster import accept_event
 from .cluster_auth import verify_heartbeat
 from .cluster_notify import notify_global_block_sync
 from .cluster_policy import evaluate
 from .threat_intel import active
+from pathlib import Path
+
 STATE_PATH=Path(os.getenv("XFI_GUARD_CLUSTER_STATE",str(Path.home()/".cache/xfi-guard/cluster-state.json")))
 NODES:dict[str,dict]={};COMMANDS:dict[str,list[dict]]={};BLOCKS:dict[str,dict]={};LOCK=threading.RLock();HEARTBEAT_TTL=90
+MAX_BODY_BYTES=65536
+REQUEST_TIMEOUT=10
 
 def _load():
     try:data=json.loads(STATE_PATH.read_text())
@@ -37,8 +40,11 @@ def _configured():return bool(os.getenv("XFI_GUARD_CLUSTER_TOKEN","").strip() an
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args):return
     def _body(self):
-        length=int(self.headers.get("Content-Length","0"));
-        if length>65536:raise ValueError("request too large")
+        raw_length=self.headers.get("Content-Length")
+        if raw_length is None:raise ValueError("missing content length")
+        try:length=int(raw_length)
+        except ValueError as exc:raise ValueError("invalid content length") from exc
+        if length<0 or length>MAX_BODY_BYTES:raise ValueError("request too large")
         return json.loads(self.rfile.read(length).decode())
     def _auth(self):
         expected=os.getenv("XFI_GUARD_CLUSTER_TOKEN","").strip()
@@ -51,6 +57,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._auth():return _json(self,401,{"error":"unauthorized"})
         try:
             payload=self._body()
+            if not isinstance(payload,dict):raise ValueError("JSON object required")
             if self.path=="/heartbeat":
                 node=str(payload.get("node",""))[:128];signature=str(payload.pop("signature",""))
                 if not node:raise ValueError("missing node")
@@ -102,6 +109,12 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:_prune_expired(now);return _json(self,200,BLOCKS.get(ip,{"ip":ip,"nodes":{}}))
         return _json(self,404,{"error":"not found"})
 
+class SafeThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads=True
+    allow_reuse_address=True
+    def get_request(self):
+        request,client_address=super().get_request();request.settimeout(REQUEST_TIMEOUT);return request,client_address
+
 def main():
-    _load();host=os.getenv("XFI_GUARD_CLUSTER_HOST","127.0.0.1");port=int(os.getenv("XFI_GUARD_CLUSTER_PORT","8765"));ThreadingHTTPServer((host,port),Handler).serve_forever()
+    _load();host=os.getenv("XFI_GUARD_CLUSTER_HOST","127.0.0.1");port=int(os.getenv("XFI_GUARD_CLUSTER_PORT","8765"));SafeThreadingHTTPServer((host,port),Handler).serve_forever()
 if __name__=="__main__":main()
