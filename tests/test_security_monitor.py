@@ -21,12 +21,15 @@ def test_run_forever_baselines_without_startup_notification(monkeypatch):
         calls.append(kwargs)
         return {"alerts": []}
 
+    class StopLoop(BaseException):
+        pass
+
     monkeypatch.setattr(security_monitor, "scan_once", fake_scan_once)
-    monkeypatch.setattr(security_monitor.time, "sleep", lambda _: (_ for _ in ()).throw(StopIteration))
+    monkeypatch.setattr(security_monitor.time, "sleep", lambda _: (_ for _ in ()).throw(StopLoop()))
 
     try:
         security_monitor.run_forever(interval=300, threshold=60)
-    except StopIteration:
+    except StopLoop:
         pass
 
     assert calls[0] == {"threshold": 60, "notify": False}
