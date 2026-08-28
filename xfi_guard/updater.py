@@ -13,6 +13,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from .admin_auth import admin_ids
 
 REPO = Path(os.getenv("XFI_GUARD_REPO", "/opt/xfi-guard"))
 SERVICE = os.getenv("XFI_GUARD_SERVICE", "xfi-guard-bot")
@@ -73,11 +74,11 @@ def _write_status(status: str, message: str, old: str = "", new: str = "") -> No
 
 
 def notify(text: str, keyboard: list[list[dict]] | None = None) -> bool:
-    _load_env_file(); token = os.getenv("XFI_GUARD_BOT_TOKEN", "").strip(); admin_ids = [x.strip() for x in os.getenv("XFI_GUARD_ADMIN_IDS", "").split(",") if x.strip().isdigit()]
-    if not token or not admin_ids:
+    _load_env_file(); token = os.getenv("XFI_GUARD_BOT_TOKEN", "").strip(); recipients = sorted(admin_ids())
+    if not token or not recipients:
         print("Telegram notification skipped: XFI_GUARD_BOT_TOKEN/XFI_GUARD_ADMIN_IDS not configured", file=sys.stderr); return False
     endpoint = f"{telegram_api_base().rstrip('/')}/bot{token}/sendMessage"; ok = True
-    for chat_id in admin_ids:
+    for chat_id in recipients:
         payload: dict[str, object] = {"chat_id": int(chat_id), "text": text}
         if keyboard: payload["reply_markup"] = {"inline_keyboard": keyboard}
         req = urllib.request.Request(endpoint, data=json.dumps(payload, ensure_ascii=False).encode(), headers={"Content-Type": "application/json", "User-Agent": "XFI-Guard-Updater"}, method="POST")
@@ -86,7 +87,7 @@ def notify(text: str, keyboard: list[list[dict]] | None = None) -> bool:
                 body = json.loads(response.read().decode())
                 if not body.get("ok"): raise RuntimeError(str(body))
         except Exception as exc:
-            ok = False; print(f"Telegram notification failed for {chat_id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+            ok = False; print(f"Telegram notification failed for recipient {chat_id}: {type(exc).__name__}: {exc}", file=sys.stderr)
     return ok
 
 
