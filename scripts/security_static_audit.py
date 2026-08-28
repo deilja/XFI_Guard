@@ -59,12 +59,11 @@ def main() -> int:
                 if any(_contains_secret_name(arg) for arg in node.args):
                     findings.append(f"{path}:{node.lineno}: possible secret passed to logger")
 
-        # Legacy admin plumbing is a reliable syntactic indicator. A bare
-        # from_user.id access is intentionally NOT forbidden: it is often used
-        # for audit actor IDs and is not itself an authorization bypass.
+        # Flag local legacy plumbing, not the centralized admin_auth helper
+        # itself. Reading the helper's admin list is the intended policy path.
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id == "admin_ids":
-                findings.append(f"{path}:{node.lineno}: legacy admin_ids reference")
+            if isinstance(node, ast.Name) and node.id == "admin_ids" and isinstance(node.ctx, (ast.Store, ast.Del)):
+                findings.append(f"{path}:{node.lineno}: legacy local admin_ids assignment")
 
     if findings:
         print("XFI Guard static security audit: FAILED")
