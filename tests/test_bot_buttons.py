@@ -36,5 +36,5 @@ def test_no_legacy_main_menu_labels():
 def test_delegated_ui_modules_are_registered_once():
     source = inspect.getsource(bot.build_dispatcher)
     assert source.count("install_xui_handlers(dp)") == 1
-    assert source.count("install_cluster_handlers(dp,ADMIN_IDS,main_kb)") == 1
+    assert source.count("install_cluster_handlers(dp,main_kb)") == 1
     assert source.count("install_defense_handlers(dp)") == 1
