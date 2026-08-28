@@ -51,7 +51,7 @@ def _critical_alerts():
             if old is None or score>int(old.get("score",0) or 0):result[ip]=alert
     return list(result.values())
 def _authorized(callback): return authorized(callback)
-def register_alert_callbacks(dp,admin_ids):
+def register_alert_callbacks(dp):
     @dp.callback_query(F.data.startswith("xfi:block:"))
     async def block_alert(callback):
         uid=callback.from_user.id if callback.from_user else 0
