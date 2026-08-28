@@ -67,18 +67,17 @@ def blocks_view():
     for x in blocks[:40]:
         ns=x.get("nodes",{}) or {};lines += [f"🚫 {x.get('ip','-')}",f"   Источник: {x.get('source_node','-')}",f"   VPS: {sum(v=='blocked' for v in ns.values())} применено / {sum(v=='queued' for v in ns.values())} в очереди",f"   До: {x.get('until','-')}"]
     return "\n".join(lines+[f"… ещё {len(blocks)-40}"] if len(blocks)>40 else lines)[:3900]
-def install_cluster_handlers(dp,admin_ids:set[int],main_kb):
-    def allowed(obj): return authorized(obj)
+def install_cluster_handlers(dp,main_kb):
     @dp.message(F.text.in_({"🌐 Кластер","🌐 Cluster Center"}))
     async def cluster_button(m):
-        if allowed(m):await m.answer(cluster_view(),reply_markup=_buttons())
+        if authorized(m):await m.answer(cluster_view(),reply_markup=_buttons())
     @dp.callback_query(F.data=="cluster:refresh")
     async def refresh(c):
-        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
+        if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         await c.message.edit_text(cluster_view(),reply_markup=_buttons());await c.answer("Кластер обновлён")
     @dp.callback_query(F.data=="cluster:nodes")
     async def nodes(c):
-        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
+        if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         local=await asyncio.to_thread(_local_node_data)
         if local:
             text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local);await c.message.edit_text(text[:3900],reply_markup=_buttons())
@@ -86,25 +85,25 @@ def install_cluster_handlers(dp,admin_ids:set[int],main_kb):
         await c.answer("VPS-узлы")
     @dp.callback_query(F.data.startswith("cluster:detail:"))
     async def detail(c):
-        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
+        if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         name=c.data.split(":",2)[2];node=next((n for n in load_nodes() if n.name==name),None)
         if not node:return await c.answer("VPS не найден",show_alert=True)
         x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(_detail(x),reply_markup=_node_buttons(name));await c.answer("Обновлено")
     @dp.callback_query(F.data.startswith("cluster:confirm_restart:"))
     async def confirm_restart(c):
-        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
+        if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         name=c.data.split(":",2)[2];await c.message.edit_text(f"⚠️ Подтвердите перезапуск XFI Guard на VPS {name}.\n\nВыполнится только:\nsudo -n systemctl restart xfi-guard.service",reply_markup=_node_buttons(name,True));await c.answer()
     @dp.callback_query(F.data.startswith("cluster:restart:"))
     async def restart(c):
-        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
+        if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         name=c.data.split(":",2)[2];node=next((n for n in load_nodes() if n.name==name),None)
         if not node:return await c.answer("VPS не найден",show_alert=True)
         ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),reply_markup=_node_buttons(name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
     @dp.callback_query(F.data=="cluster:blocks")
     async def blocks(c):
-        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
+        if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         await c.message.edit_text(blocks_view(),reply_markup=_buttons());await c.answer("Глобальные блокировки")
     @dp.callback_query(F.data=="cluster:menu")
     async def menu(c):
-        if not allowed(c):return await c.answer("Нет доступа",show_alert=True)
+        if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         await c.message.edit_text("🏠 Главное меню\n\nВыберите раздел в нижнем меню.");await c.answer()
