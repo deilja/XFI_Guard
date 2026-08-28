@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from http.client import HTTPConnection
@@ -55,6 +54,7 @@ def test_cluster_master_health_and_auth(monkeypatch, tmp_path):
             "hostname": "test-host",
             "blocked": ["203.0.113.10"],
             "timestamp": time.time(),
+            "nonce": "nonce-test-1",
         }
         heartbeat["signature"] = sign_heartbeat(heartbeat, "test-secret")
         status, payload = _request(host, port, "POST", "/heartbeat", heartbeat)
@@ -93,6 +93,7 @@ def test_cluster_master_rejects_stale_heartbeat(monkeypatch, tmp_path):
             "hostname": "stale-host",
             "blocked": [],
             "timestamp": time.time() - 121,
+            "nonce": "nonce-stale-1",
         }
         heartbeat["signature"] = sign_heartbeat(heartbeat, "test-secret")
         status, payload = _request(host, port, "POST", "/heartbeat", heartbeat)
