@@ -1,14 +1,20 @@
+import time
+
 from xfi_guard import auto_defense
 from xfi_guard.auto_defense import score_ip, pending_candidates
 
 
-VALID_METADATA = {
-    "consensus": True,
-    "providers": ["gemini", "groq"],
-    "decision_id": "decision-test-001",
-    "degraded": False,
-    "authorization": "auto_defense",
-}
+def valid_metadata():
+    metadata = {
+        "consensus": True,
+        "providers": ["gemini", "groq"],
+        "degraded": False,
+        "authorization": "auto_defense",
+        "ip": "8.8.8.8",
+    }
+    digest = auto_defense._decision_digest({**metadata, "risk": "critical", "confidence": 0.99})
+    metadata["decision_id"] = f"ai-{int(time.time())}-{digest}-00000000"
+    return metadata
 
 
 def test_score_ip_critical():
@@ -32,12 +38,10 @@ def _disable_audit(monkeypatch):
 
 def test_ai_block_rejects_single_provider(monkeypatch):
     _disable_audit(monkeypatch)
-    metadata = {**VALID_METADATA, "providers": ["gemini"]}
+    metadata = {**valid_metadata(), "providers": ["gemini"]}
     called = {"value": False}
     monkeypatch.setattr(auto_defense, "_block", lambda *args, **kwargs: called.__setitem__("value", True))
-
     ok, message = auto_defense.ai_block("8.8.8.8", confidence=0.99, metadata=metadata)
-
     assert ok is False
     assert "отклонена" in message
     assert called["value"] is False
@@ -47,9 +51,7 @@ def test_ai_block_rejects_low_confidence(monkeypatch):
     _disable_audit(monkeypatch)
     called = {"value": False}
     monkeypatch.setattr(auto_defense, "_block", lambda *args, **kwargs: called.__setitem__("value", True))
-
-    ok, _ = auto_defense.ai_block("8.8.8.8", confidence=0.89, metadata=VALID_METADATA)
-
+    ok, _ = auto_defense.ai_block("8.8.8.8", confidence=0.89, metadata=valid_metadata())
     assert ok is False
     assert called["value"] is False
 
@@ -58,12 +60,7 @@ def test_ai_block_rejects_degraded_consensus(monkeypatch):
     _disable_audit(monkeypatch)
     called = {"value": False}
     monkeypatch.setattr(auto_defense, "_block", lambda *args, **kwargs: called.__setitem__("value", True))
-
-    ok, _ = auto_defense.ai_block(
-        "8.8.8.8", confidence=0.99,
-        metadata={**VALID_METADATA, "degraded": True},
-    )
-
+    ok, _ = auto_defense.ai_block("8.8.8.8", confidence=0.99, metadata={**valid_metadata(), "degraded": True})
     assert ok is False
     assert called["value"] is False
 
@@ -72,12 +69,7 @@ def test_ai_block_rejects_missing_decision_authorization(monkeypatch):
     _disable_audit(monkeypatch)
     called = {"value": False}
     monkeypatch.setattr(auto_defense, "_block", lambda *args, **kwargs: called.__setitem__("value", True))
-
-    ok, _ = auto_defense.ai_block(
-        "8.8.8.8", confidence=0.99,
-        metadata={**VALID_METADATA, "authorization": ""},
-    )
-
+    ok, _ = auto_defense.ai_block("8.8.8.8", confidence=0.99, metadata={**valid_metadata(), "authorization": ""})
     assert ok is False
     assert called["value"] is False
 
@@ -91,15 +83,7 @@ def test_ai_block_allows_valid_consensus_and_calls_backend(monkeypatch):
         return True, "blocked"
 
     monkeypatch.setattr(auto_defense, "_block", fake_block)
-
-    ok, message = auto_defense.ai_block(
-        "8.8.8.8",
-        risk="critical",
-        confidence=0.99,
-        reason="confirmed threat",
-        metadata=VALID_METADATA,
-    )
-
+    ok, message = auto_defense.ai_block("8.8.8.8", risk="critical", confidence=0.99, reason="confirmed threat", metadata=valid_metadata())
     assert ok is True
     assert message == "blocked"
     assert captured["ip"] == "8.8.8.8"
@@ -112,10 +96,6 @@ def test_ai_block_rejects_noncritical_risk(monkeypatch):
     _disable_audit(monkeypatch)
     called = {"value": False}
     monkeypatch.setattr(auto_defense, "_block", lambda *args, **kwargs: called.__setitem__("value", True))
-
-    ok, _ = auto_defense.ai_block(
-        "8.8.8.8", risk="high", confidence=0.99, metadata=VALID_METADATA
-    )
-
+    ok, _ = auto_defense.ai_block("8.8.8.8", risk="high", confidence=0.99, metadata=valid_metadata())
     assert ok is False
     assert called["value"] is False
