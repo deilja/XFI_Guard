@@ -27,8 +27,6 @@ def _default_state_path() -> Path:
     configured = os.getenv("XFI_GUARD_CLUSTER_NODE_STATE")
     if configured:
         return Path(configured)
-    # Production runs as root and keeps state under /var/lib. Non-root CI and
-    # development processes must not need write access to a system directory.
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         root = Path(tempfile.gettempdir()) / f"xfi-guard-{os.getuid()}"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -66,7 +64,6 @@ def _request(path: str, payload: dict) -> dict:
 
 
 def _local_blocked() -> list[str]:
-    """Read locally applied blocks without invoking external commands."""
     try:
         data = json.loads(STATE.read_text())
         return [x for x in data.get("blocked", []) if _valid_ip(x)][-500:]
@@ -75,7 +72,6 @@ def _local_blocked() -> list[str]:
 
 
 def _save_state(**updates: object) -> None:
-    """Atomically persist node state while retaining the local block inventory."""
     current: dict = {}
     try:
         loaded = json.loads(STATE.read_text())
@@ -87,10 +83,16 @@ def _save_state(**updates: object) -> None:
     blocked = [x for x in current.get("blocked", []) if isinstance(x, str) and _valid_ip(x)]
     current["blocked"] = blocked[-500:]
     STATE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(current, ensure_ascii=False))
-    tmp.chmod(0o600)
-    os.replace(tmp, STATE)
+    tmp = STATE.with_name(f".{STATE.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(current, ensure_ascii=False))
+        tmp.chmod(0o600)
+        os.replace(tmp, STATE)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def heartbeat() -> dict:
