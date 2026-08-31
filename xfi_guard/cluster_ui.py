@@ -1,6 +1,6 @@
 """Telegram Cluster Center for XFI Guard."""
 from __future__ import annotations
-import asyncio,json,os,socket,urllib.error,urllib.request
+import asyncio,json,os,socket,hmac,hashlib,urllib.error,urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 from aiogram import F
@@ -13,10 +13,8 @@ DEFAULT_MASTER_URL="http://127.0.0.1:8765"
 def _master_url(): return os.getenv("XFI_GUARD_CLUSTER_MASTER_URL",DEFAULT_MASTER_URL).strip().rstrip("/") or DEFAULT_MASTER_URL
 def _validate_master_url(url:str)->str:
     p=urlsplit(url)
-    if p.scheme not in {"http","https"} or not p.hostname or p.username or p.password:
-        raise RuntimeError("XFI_GUARD_CLUSTER_MASTER_URL имеет некорректный формат")
-    if p.scheme=="http" and p.hostname not in {"127.0.0.1","localhost","::1"}:
-        raise RuntimeError("Для удалённого Cluster Master требуется HTTPS")
+    if p.scheme not in {"http","https"} or not p.hostname or p.username or p.password: raise RuntimeError("XFI_GUARD_CLUSTER_MASTER_URL имеет некорректный формат")
+    if p.scheme=="http" and p.hostname not in {"127.0.0.1","localhost","::1"}: raise RuntimeError("Для удалённого Cluster Master требуется HTTPS")
     return url
 def _timeout():
     try:return max(1.,min(15.,float(os.getenv("XFI_GUARD_CLUSTER_TIMEOUT","5"))))
@@ -44,6 +42,18 @@ def _master_diagnostic(exc):
     except TimeoutError:return f"URL: {url}\n🔴 TCP: timeout — узел не отвечает"
     except OSError as e:return f"URL: {url}\n🔴 TCP: недоступен ({e})"
     return f"URL: {url}\n{tcp}\n🔴 HTTP: {type(exc).__name__}: {exc}"
+def _callback_secret()->bytes:
+    value=os.getenv("XFI_GUARD_CLUSTER_TOKEN","").strip()
+    if not value: raise RuntimeError("XFI_GUARD_CLUSTER_TOKEN не задан")
+    return value.encode("utf-8")
+def _node_ref(name:str)->str:
+    """Opaque authenticated callback reference; Telegram callback data is untrusted."""
+    digest=hmac.new(_callback_secret(),name.encode("utf-8"),hashlib.sha256).hexdigest()[:20]
+    return digest
+def _resolve_node_ref(ref:str):
+    for node in load_nodes():
+        if hmac.compare_digest(_node_ref(node.name),ref): return node
+    return None
 def _buttons(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data="cluster:refresh")],[InlineKeyboardButton(text="🖥 VPS-узлы",callback_data="cluster:nodes")],[InlineKeyboardButton(text="🌐 Глобальные блокировки",callback_data="cluster:blocks")],[InlineKeyboardButton(text="⬅️ Главное меню",callback_data="cluster:menu")]])
 def _state_blocks():
     try:return json.loads(STATE_PATH.read_text()).get("blocks",{})
@@ -61,8 +71,9 @@ def _format_nodes(data):
 def _local_node_data(): return [probe_node(n) for n in load_nodes()]
 def _detail(x): return "\n".join([f"🖥 VPS: {x.get('name','—')}","",f"Host: {x.get('host','—')}",f"Status: {str(x.get('status','offline')).upper()}",f"Hostname: {x.get('hostname','—')}",f"XFI Guard: {x.get('xfi_guard','—')}",f"Fail2Ban: {x.get('fail2ban','—')}",f"UFW: {x.get('ufw','—')}",f"Load: {x.get('load','—')}",f"RAM: {x.get('memory','—')}",f"Disk /: {x.get('disk','—')}",f"Uptime: {x.get('uptime','—')}",f"Проверено: {x.get('checked_at','—')}",f"Ошибка: {x.get('error','нет')}"])
 def _node_buttons(name,confirm=False):
-    if confirm:return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Да, перезапустить",callback_data=f"cluster:restart:{name}")],[InlineKeyboardButton(text="❌ Отмена",callback_data=f"cluster:detail:{name}")]])
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data=f"cluster:detail:{name}")],[InlineKeyboardButton(text="♻️ Перезапустить XFI Guard",callback_data=f"cluster:confirm_restart:{name}")],[InlineKeyboardButton(text="⬅️ Cluster Center",callback_data="cluster:refresh")]])
+    ref=_node_ref(name)
+    if confirm:return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Да, перезапустить",callback_data=f"cluster:restart:{ref}")],[InlineKeyboardButton(text="❌ Отмена",callback_data=f"cluster:detail:{ref}")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data=f"cluster:detail:{ref}")],[InlineKeyboardButton(text="♻️ Перезапустить XFI Guard",callback_data=f"cluster:confirm_restart:{ref}")],[InlineKeyboardButton(text="⬅️ Cluster Center",callback_data="cluster:refresh")]])
 def cluster_view():
     try:
         health=_request("/health");nodes=_request("/nodes");summary=cluster_summary(nodes.get("nodes",[]));blocks=_live_blocks();c=summary["counts"];return "\n".join(["🌐 XFI GUARD • CLUSTER CENTER","", "🟢 Cluster Master: ONLINE",f"{'🟢' if summary['status']=='online' else '🟡' if summary['status']=='degraded' else '🔴'} Cluster: {summary['status'].upper()}","",f"🖥 VPS: {summary['total']}",f"🟢 Online: {c['online']}",f"🟡 Degraded: {c['degraded']}",f"🔴 Offline: {c['offline']}",f"🚨 Активные угрозы: {int(health.get('threats',0))}",f"🔒 Глобальные IP: {len(blocks)}","","🛡 Политика","• AI consensus → авто-блок","• Fail2Ban → 7 дней","• Global sync → включена","• Heartbeat TTL: 90s"])
@@ -86,26 +97,27 @@ def install_cluster_handlers(dp,main_kb):
     async def nodes(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         local=await asyncio.to_thread(_local_node_data)
-        if local:
-            text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local);await c.message.edit_text(text[:3900],reply_markup=_buttons())
+        if local:text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local);await c.message.edit_text(text[:3900],reply_markup=_buttons())
         else:await c.message.edit_text("🖥 VPS-УЗЛЫ\n\n"+_format_nodes(_request("/nodes")),reply_markup=_buttons())
         await c.answer("VPS-узлы")
     @dp.callback_query(F.data.startswith("cluster:detail:"))
     async def detail(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
-        name=c.data.split(":",2)[2];node=next((n for n in load_nodes() if n.name==name),None)
+        ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
         if not node:return await c.answer("VPS не найден",show_alert=True)
-        x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(_detail(x),reply_markup=_node_buttons(name));await c.answer("Обновлено")
+        x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(_detail(x),reply_markup=_node_buttons(node.name));await c.answer("Обновлено")
     @dp.callback_query(F.data.startswith("cluster:confirm_restart:"))
     async def confirm_restart(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
-        name=c.data.split(":",2)[2];await c.message.edit_text(f"⚠️ Подтвердите перезапуск XFI Guard на VPS {name}.\n\nВыполнится только:\nsudo -n systemctl restart xfi-guard.service",reply_markup=_node_buttons(name,True));await c.answer()
+        ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
+        if not node:return await c.answer("VPS не найден",show_alert=True)
+        await c.message.edit_text(f"⚠️ Подтвердите перезапуск XFI Guard на VPS {node.name}.\n\nВыполнится только:\nsudo -n systemctl restart xfi-guard.service",reply_markup=_node_buttons(node.name,True));await c.answer()
     @dp.callback_query(F.data.startswith("cluster:restart:"))
     async def restart(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
-        name=c.data.split(":",2)[2];node=next((n for n in load_nodes() if n.name==name),None)
+        ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
         if not node:return await c.answer("VPS не найден",show_alert=True)
-        ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),reply_markup=_node_buttons(name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
+        ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),reply_markup=_node_buttons(node.name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
     @dp.callback_query(F.data=="cluster:blocks")
     async def blocks(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
