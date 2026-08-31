@@ -101,9 +101,16 @@ def install_cluster_handlers(dp,main_kb):
     async def nodes(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         local=await asyncio.to_thread(_local_node_data)
-        if local:text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local);await _safe_edit(c.message,text[:3900],_buttons())
-        else:await _safe_edit(c.message,"🖥 VPS-УЗЛЫ\n\n"+_format_nodes(_request("/nodes")),_buttons())
-        await c.answer("VPS-узлы")
+        if local:
+            text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local)
+        else:
+            try:
+                data=await asyncio.to_thread(_request,"/nodes")
+                text="🖥 VPS-УЗЛЫ\n\n"+_format_nodes(data)
+            except Exception as exc:
+                text="🖥 VPS-УЗЛЫ\n\n🔴 Cluster Master недоступен.\n\n"+str(exc)
+        await _safe_edit(c.message,text[:3900],_buttons())
+        await c.answer("VPS-узлы" if "🔴" not in text else "Cluster Master недоступен",show_alert="🔴" in text)
     @dp.callback_query(F.data.startswith("cluster:detail:"))
     async def detail(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
