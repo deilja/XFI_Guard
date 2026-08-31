@@ -1,6 +1,6 @@
 """Multi-VPS inventory, diagnostics and safe SSH host-key enrollment."""
 from __future__ import annotations
-import base64, hashlib, ipaddress, json, os, re, subprocess, tomllib
+import base64, hashlib, ipaddress, json, os, re, stat, subprocess, tomllib
 from dataclasses import dataclass
 from pathlib import Path
 DEFAULT_IDENTITY_FILE=Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
@@ -33,9 +33,14 @@ def load_nodes(path:str|Path="config.toml")->list[Node]:
             if any(c in host for c in " /\\\t\r\n"):continue
         out.append(Node(name,host,user,port,True,identity))
     return out
+def _validate_identity(identity:Path)->None:
+    if not identity.is_file(): raise ValueError(f"SSH identity file not found: {identity}")
+    try: mode=stat.S_IMODE(identity.stat().st_mode)
+    except OSError as exc: raise ValueError(f"Cannot stat SSH identity: {identity}") from exc
+    if mode & 0o077: raise ValueError(f"SSH identity permissions too open: {oct(mode)}")
 def _ssh_base(node:Node)->list[str]:
-    identity=Path(os.path.expanduser(node.identity_file)); cmd=["ssh","-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=yes","-o","ConnectTimeout=8"]
-    if identity.is_file():cmd += ["-i",str(identity)]
+    identity=Path(os.path.expanduser(node.identity_file)); _validate_identity(identity)
+    cmd=["ssh","-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=yes","-o","ConnectTimeout=8","-i",str(identity)]
     return cmd+["-p",str(node.port),f"{node.user}@{node.host}"]
 def _key_fingerprint(line:str)->str:
     parts=line.strip().split()
