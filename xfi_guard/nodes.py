@@ -4,6 +4,7 @@ import base64, hashlib, ipaddress, json, os, re, subprocess, tomllib
 from dataclasses import dataclass
 from pathlib import Path
 DEFAULT_IDENTITY_FILE=Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
+ALLOWED_REMOTE_ACTION="restart_guard"
 @dataclass(frozen=True)
 class Node:
     name:str; host:str; user:str="root"; port:int=22; enabled:bool=True; identity_file:str=str(DEFAULT_IDENTITY_FILE)
@@ -69,6 +70,9 @@ def enroll_host_key(node:Node,timeout:int=10)->tuple[bool,str]:
                 for line in additions:f.write(line+"\n")
         return True,str(known)
     except Exception as exc:return False,f"{type(exc).__name__}: {exc}"
+def _remote_action_argv(action:str)->list[str]:
+    if action != ALLOWED_REMOTE_ACTION: raise ValueError("Unsupported remote action")
+    return ["sudo","-n","systemctl","restart","xfi-guard.service"]
 _REMOTE_SCRIPT="""import json, platform, subprocess
 
 def run(command):
@@ -82,9 +86,11 @@ def probe_node(node:Node,timeout:int=8)->dict:
         if p.returncode!=0:return {"name":node.name,"host":node.host,"status":"offline","error":(p.stderr or "ssh failed").strip()[:500]}
         payload=json.loads(p.stdout.strip().splitlines()[-1]); return {"name":node.name,"host":node.host,"status":"online",**payload}
     except Exception as exc:return {"name":node.name,"host":node.host,"status":"offline","error":f"{type(exc).__name__}: {exc}"}
-def restart_guard(node:Node,timeout:int=12)->tuple[bool,str]:
+def restart_guard(node:Node,action:str=ALLOWED_REMOTE_ACTION,timeout:int=12)->tuple[bool,str]:
+    try: remote=_remote_action_argv(action)
+    except ValueError as exc:return False,str(exc)
     try:
-        p=subprocess.run(_ssh_base(node)+["sudo","-n","systemctl","restart","xfi-guard.service"],text=True,capture_output=True,timeout=timeout,check=False)
+        p=subprocess.run(_ssh_base(node)+remote,text=True,capture_output=True,timeout=timeout,check=False)
         if p.returncode!=0:return False,(p.stderr or p.stdout or "restart failed").strip()[:600]
         return True,"xfi-guard.service перезапущен"
     except Exception as exc:return False,f"{type(exc).__name__}: {exc}"
