@@ -6,6 +6,7 @@ import hmac
 import ipaddress
 import json
 import secrets
+import shlex
 import subprocess
 import threading
 import time
@@ -87,8 +88,15 @@ def _valid_ip(ip: str) -> bool:
         return False
 
 
-def _ssh(node: Node, command: str, timeout: int = 15) -> tuple[bool, str]:
-    cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=7", "-p", str(node.port), f"{node.user}@{node.host}", "--", command]
+def _ssh(node: Node, args: list[str], timeout: int = 15) -> tuple[bool, str]:
+    """Run a fixed remote executable with shell-quoted arguments only."""
+    if not args or any("\x00" in value for value in args):
+        return False, "invalid remote command"
+    remote = " ".join(shlex.quote(value) for value in args)
+    cmd = [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=7",
+        "-p", str(node.port), f"{node.user}@{node.host}", "--", remote,
+    ]
     try:
         p = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False)
         return p.returncode == 0, (p.stdout or p.stderr or "").strip()[-1200:]
@@ -100,8 +108,11 @@ def ban_on_node(node: Node, ip: str, bantime: int = BANTIME) -> dict:
     if not _valid_ip(ip):
         return {"node": node.name, "ip": ip, "ok": False, "error": "invalid IP"}
     safe_bantime = max(60, min(int(bantime), BANTIME))
-    command = f"sudo fail2ban-client set xfi-guard bantime {safe_bantime} && sudo fail2ban-client set xfi-guard banip {ip}"
-    ok, out = _ssh(node, command)
+    base = ["sudo", "fail2ban-client", "set", "xfi-guard"]
+    ok, out = _ssh(node, base + ["bantime", str(safe_bantime)])
+    if not ok:
+        return {"node": node.name, "ip": ip, "ok": False, "output": out}
+    ok, out = _ssh(node, base + ["banip", ip])
     return {"node": node.name, "ip": ip, "ok": ok, "output": out}
 
 
