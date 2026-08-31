@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import socket
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -83,7 +84,7 @@ def heartbeat() -> dict:
 def apply_block(ip: str, until: int) -> bool:
     bantime = max(60, until - int(time.time()))
     base = ["fail2ban-client", "set", "xfi-guard"]
-    configure = __import__("subprocess").run(
+    configure = subprocess.run(
         base + ["bantime", str(bantime)],
         capture_output=True,
         text=True,
@@ -92,7 +93,7 @@ def apply_block(ip: str, until: int) -> bool:
     )
     if configure.returncode != 0:
         return False
-    p = __import__("subprocess").run(
+    p = subprocess.run(
         base + ["banip", ip],
         capture_output=True,
         text=True,
