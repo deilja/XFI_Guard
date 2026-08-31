@@ -4,6 +4,7 @@ import asyncio,json,os,socket,hmac,hashlib,urllib.error,urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 from aiogram import F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton,InlineKeyboardMarkup
 from .admin_auth import authorized
 from .cluster_status import cluster_summary
@@ -47,7 +48,6 @@ def _callback_secret()->bytes:
     if not value: raise RuntimeError("XFI_GUARD_CLUSTER_TOKEN не задан")
     return value.encode("utf-8")
 def _node_ref(name:str)->str:
-    """Opaque authenticated callback reference; Telegram callback data is untrusted."""
     digest=hmac.new(_callback_secret(),name.encode("utf-8"),hashlib.sha256).hexdigest()[:20]
     return digest
 def _resolve_node_ref(ref:str):
@@ -85,6 +85,10 @@ def blocks_view():
     for x in blocks[:40]:
         ns=x.get("nodes",{}) or {};lines += [f"🚫 {x.get('ip','-')}",f"   Источник: {x.get('source_node','-')}",f"   VPS: {sum(v=='blocked' for v in ns.values())} применено / {sum(v=='queued' for v in ns.values())} в очереди",f"   До: {x.get('until','-')}"]
     return "\n".join(lines+[f"… ещё {len(blocks)-40}"] if len(blocks)>40 else lines)[:3900]
+async def _safe_edit(message,text,reply_markup):
+    try: await message.edit_text(text,reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower(): raise
 def install_cluster_handlers(dp,main_kb):
     @dp.message(F.text.in_({"🌐 Кластер","🌐 Cluster Center"}))
     async def cluster_button(m):
@@ -92,37 +96,37 @@ def install_cluster_handlers(dp,main_kb):
     @dp.callback_query(F.data=="cluster:refresh")
     async def refresh(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
-        await c.message.edit_text(cluster_view(),reply_markup=_buttons());await c.answer("Кластер обновлён")
+        await _safe_edit(c.message,cluster_view(),_buttons());await c.answer("Кластер обновлён")
     @dp.callback_query(F.data=="cluster:nodes")
     async def nodes(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         local=await asyncio.to_thread(_local_node_data)
-        if local:text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local);await c.message.edit_text(text[:3900],reply_markup=_buttons())
-        else:await c.message.edit_text("🖥 VPS-УЗЛЫ\n\n"+_format_nodes(_request("/nodes")),reply_markup=_buttons())
+        if local:text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local);await _safe_edit(c.message,text[:3900],_buttons())
+        else:await _safe_edit(c.message,"🖥 VPS-УЗЛЫ\n\n"+_format_nodes(_request("/nodes")),_buttons())
         await c.answer("VPS-узлы")
     @dp.callback_query(F.data.startswith("cluster:detail:"))
     async def detail(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
         if not node:return await c.answer("VPS не найден",show_alert=True)
-        x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(_detail(x),reply_markup=_node_buttons(node.name));await c.answer("Обновлено")
+        x=await asyncio.to_thread(probe_node,node);await _safe_edit(c.message,_detail(x),_node_buttons(node.name));await c.answer("Обновлено")
     @dp.callback_query(F.data.startswith("cluster:confirm_restart:"))
     async def confirm_restart(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
         if not node:return await c.answer("VPS не найден",show_alert=True)
-        await c.message.edit_text(f"⚠️ Подтвердите перезапуск XFI Guard на VPS {node.name}.\n\nВыполнится только:\nsudo -n systemctl restart xfi-guard.service",reply_markup=_node_buttons(node.name,True));await c.answer()
+        await _safe_edit(c.message,f"⚠️ Подтвердите перезапуск XFI Guard на VPS {node.name}.\n\nВыполнится только:\nsudo -n systemctl restart xfi-guard.service",_node_buttons(node.name,True));await c.answer()
     @dp.callback_query(F.data.startswith("cluster:restart:"))
     async def restart(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
         if not node:return await c.answer("VPS не найден",show_alert=True)
-        ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await c.message.edit_text(("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),reply_markup=_node_buttons(node.name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
+        ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await _safe_edit(c.message,("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),_node_buttons(node.name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
     @dp.callback_query(F.data=="cluster:blocks")
     async def blocks(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
-        await c.message.edit_text(blocks_view(),reply_markup=_buttons());await c.answer("Глобальные блокировки")
+        await _safe_edit(c.message,blocks_view(),_buttons());await c.answer("Глобальные блокировки")
     @dp.callback_query(F.data=="cluster:menu")
     async def menu(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
-        await c.message.edit_text("🏠 Главное меню\n\nВыберите раздел в нижнем меню.");await c.answer()
+        await _safe_edit(c.message,"🏠 Главное меню\n\nВыберите раздел в нижнем меню.",None);await c.answer()
