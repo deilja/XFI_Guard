@@ -1,0 +1,7 @@
+# Copy to ../config.local.toml for machine-specific settings.
+# Do not commit the copied file.
+# Keep secrets in /etc/xfi-guard/*.env or systemd credentials.
+
+# Example:
+# [telegram]
+# enabled = false
