@@ -8,10 +8,26 @@ __pycache__/
 
 # Local/runtime state
 .env
+.env.*
+*.env
 *.db
 *.sqlite
 *.sqlite3
 *.log
+
+# Secrets / credentials
+*.pem
+*.key
+*.crt
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+known_hosts
+bot.env
+ai.json
+secrets.json
+credentials.json
 
 # Build artifacts
 build/
