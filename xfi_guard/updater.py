@@ -19,6 +19,7 @@ LOCK_FILE = Path(os.getenv("XFI_GUARD_UPDATE_LOCK", "/run/xfi-guard-update.lock"
 NOTIFIED_FILE = STATE_DIR / "update-notified"
 STATUS_FILE = STATE_DIR / "update-status.json"
 ENV_FILE = Path(os.getenv("XFI_GUARD_ENV_FILE", "/etc/xfi-guard/bot.env"))
+ADMIN_IDS_ENV = "XFI_GUARD_ADMIN_IDS"
 ROLLBACK_BRANCH = "xfi-guard-pre-update"
 LOCAL_STASH_PREFIX = "xfi-guard-auto-preserve"
 GENERATED_DIRS = ("xfi_guard/__pycache__", "tests/__pycache__", ".pytest_cache", "xfi_guard.egg-info")
@@ -90,7 +91,8 @@ def preserve_local_changes() -> str:
     _cleanup_generated(); status = run("git", "status", "--porcelain").stdout.strip()
     if not status: return ""
     marker = f"{LOCAL_STASH_PREFIX}-{int(time.time())}"
-    run("git", "stash", "push", "--include-untracked", "-m", marker, timeout=120)
+    result = run("git", "stash", "push", "--include-untracked", "-m", marker, timeout=120, check=False)
+    if result.returncode != 0: raise RuntimeError(f"Не удалось сохранить локальные изменения: {result.stderr.strip()[-500:]}")
     for line in run("git", "stash", "list", "--format=%H %gs").stdout.splitlines():
         if marker in line: return line.split(" ", 1)[0]
     raise RuntimeError("Git stash создан, но его идентификатор не найден")
@@ -148,7 +150,7 @@ def apply_update() -> int:
     old = ""; stash = ""; old_requirements = ""; req = REPO / "requirements-bot.txt"
     try:
         old = local_head(); stash = preserve_local_changes(); old_requirements = req.read_text(encoding="utf-8") if req.exists() else ""
-        remote = run("git", "fetch", "--prune", "origin", "main", timeout=120) and run("git", "rev-parse", "origin/main").stdout.strip()
+        run("git", "fetch", "--prune", "origin", "main", timeout=120); remote = run("git", "rev-parse", "origin/main").stdout.strip()
         if old == remote and not stash: _write_status("актуально", "Сервер уже на актуальном main.", old, remote); return 0
         _write_status("обновление", "Устанавливается новая версия.", old, remote)
         run("git", "branch", "-f", ROLLBACK_BRANCH, old); _install(remote); restore_local_changes(stash)
