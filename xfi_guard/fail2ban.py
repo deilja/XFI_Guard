@@ -36,6 +36,16 @@ def ban(ip: str, seconds: int = BAN_SECONDS) -> tuple[bool, str]:
     requested = max(60, int(seconds))
     if not jail_active():
         return False, f"Fail2Ban jail '{JAIL}' is not active"
+
+    # Fail2Ban's ``banip`` uses the jail's configured bantime. Set it for
+    # this operation so the user-requested duration is actually applied.
+    configure_code, _, configure_err = _run(
+        ["fail2ban-client", "set", JAIL, "bantime", str(requested)]
+    )
+    if configure_code != 0:
+        output = (configure_err or "").strip()
+        return False, f"Не удалось установить bantime для {JAIL}: {output[-500:]}"
+
     code, stdout, stderr = _run(["fail2ban-client", "set", JAIL, "banip", ip])
     output = (stdout or stderr).strip()
     if code == 0:
