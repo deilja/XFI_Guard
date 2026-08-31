@@ -15,6 +15,7 @@ from .node_bootstrap import bootstrap
 
 
 class AddVPSStates(StatesGroup):
+    master_url = State()
     host = State()
     port = State()
     user = State()
@@ -36,6 +37,12 @@ def _credentials_ready() -> bool:
     return bool(os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip() and os.getenv("XFI_GUARD_CLUSTER_SECRET", "").strip())
 
 
+def _validate_master_or_error(url: str) -> str:
+    url = url.strip().rstrip("/")
+    _validate_master_url(url)
+    return url
+
+
 def install_cluster_add_handlers(dp) -> None:
     @dp.callback_query(F.data == "cluster:add")
     async def add_start(c: CallbackQuery, state: FSMContext):
@@ -44,13 +51,22 @@ def install_cluster_add_handlers(dp) -> None:
         if not _credentials_ready():
             return await c.answer("Cluster credentials не настроены", show_alert=True)
         master = _master_url()
-        if not master:
-            return await c.answer("XFI_GUARD_CLUSTER_MASTER_URL не задан", show_alert=True)
-        try:
-            _validate_master_url(master)
-        except RuntimeError as exc:
-            return await c.answer(str(exc), show_alert=True)
         await state.clear()
+        if master:
+            try:
+                _validate_master_or_error(master)
+            except RuntimeError as exc:
+                return await c.answer(str(exc), show_alert=True)
+        else:
+            await state.set_state(AddVPSStates.master_url)
+            await c.message.answer(
+                "🌐 CLUSTER MASTER URL\n\n"
+                "Введите URL, по которому новый VPS сможет достучаться до Cluster Master.\n\n"
+                "Пример для приватной сети: http://10.70.0.10:8765\n"
+                "Для удалённого HTTP используется только защищённая приватная сеть; внешний HTTP запрещён."
+            )
+            return await c.answer()
+        await state.update_data(master_url=master)
         await state.set_state(AddVPSStates.host)
         await c.message.answer(
             "➕ ДОБАВЛЕНИЕ VPS\n\n"
@@ -58,6 +74,18 @@ def install_cluster_add_handlers(dp) -> None:
             "SSH должен быть доступен с Cluster Master, а ключ — уже находиться в SSH agent/known_hosts."
         )
         await c.answer()
+
+    @dp.message(AddVPSStates.master_url)
+    async def add_master_url(message: Message, state: FSMContext):
+        if not authorized(message):
+            return
+        try:
+            master = _validate_master_or_error((message.text or ""))
+        except RuntimeError as exc:
+            return await message.answer(f"❌ {exc}\nПовторите ввод URL.")
+        await state.update_data(master_url=master)
+        await state.set_state(AddVPSStates.host)
+        await message.answer("Введите IP-адрес или hostname нового VPS:")
 
     @dp.message(AddVPSStates.host)
     async def add_host(message: Message, state: FSMContext):
@@ -101,7 +129,7 @@ def install_cluster_add_handlers(dp) -> None:
             "🧩 ПОДКЛЮЧЕНИЕ VPS\n\n"
             f"Host: {data['host']}\n"
             f"SSH: {user}@{data['host']}:{data['port']}\n"
-            f"Cluster Master: {_master_url()}\n\n"
+            f"Cluster Master: {data['master_url']}\n\n"
             "Будет установлен/обновлён XFI Guard и Cluster Agent.\n"
             "Credentials передаются по SSH и не выводятся в Telegram.\n\n"
             "Продолжить?",
@@ -124,14 +152,14 @@ def install_cluster_add_handlers(dp) -> None:
         host = data.get("host", "")
         port = int(data.get("port", 22))
         user = data.get("user", "root")
-        master = _master_url()
+        master = data.get("master_url", "")
         token = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip()
         secret = os.getenv("XFI_GUARD_CLUSTER_SECRET", "").strip()
         if not (host and master and token and secret):
             await state.clear()
             return await c.answer("Конфигурация кластера неполная", show_alert=True)
         try:
-            _validate_master_url(master)
+            _validate_master_or_error(master)
         except RuntimeError as exc:
             return await c.answer(str(exc), show_alert=True)
 
