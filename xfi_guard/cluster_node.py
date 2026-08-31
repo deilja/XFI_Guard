@@ -49,17 +49,11 @@ def _request(path: str, payload: dict) -> dict:
 
 
 def _local_blocked() -> list[str]:
+    """Read locally applied blocks without invoking external commands."""
     try:
-        import subprocess
-        p = subprocess.run(["fail2ban-client", "status", "xfi-guard"], capture_output=True, text=True, timeout=5, check=False)
-        if p.returncode != 0:
-            return []
-        try:
-            data = json.loads(STATE.read_text())
-            return [x for x in data.get("blocked", []) if _valid_ip(x)][-500:]
-        except (OSError, ValueError):
-            return []
-    except (OSError, subprocess.TimeoutExpired):
+        data = json.loads(STATE.read_text())
+        return [x for x in data.get("blocked", []) if _valid_ip(x)][-500:]
+    except (OSError, ValueError, TypeError):
         return []
 
 
@@ -87,13 +81,24 @@ def heartbeat() -> dict:
 
 
 def apply_block(ip: str, until: int) -> bool:
-    import subprocess
     bantime = max(60, until - int(time.time()))
-    base = ["sudo", "fail2ban-client", "set", "xfi-guard"]
-    configure = subprocess.run(base + ["bantime", str(bantime)], capture_output=True, text=True, timeout=15, check=False)
+    base = ["fail2ban-client", "set", "xfi-guard"]
+    configure = __import__("subprocess").run(
+        base + ["bantime", str(bantime)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
     if configure.returncode != 0:
         return False
-    p = subprocess.run(base + ["banip", ip], capture_output=True, text=True, timeout=15, check=False)
+    p = __import__("subprocess").run(
+        base + ["banip", ip],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
     return p.returncode == 0
 
 
