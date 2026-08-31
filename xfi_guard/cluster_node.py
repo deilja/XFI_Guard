@@ -58,6 +58,25 @@ def _local_blocked() -> list[str]:
         return []
 
 
+def _save_state(**updates: object) -> None:
+    """Atomically persist node state while retaining the local block inventory."""
+    current: dict = {}
+    try:
+        loaded = json.loads(STATE.read_text())
+        if isinstance(loaded, dict):
+            current = loaded
+    except (OSError, ValueError, TypeError):
+        pass
+    current.update(updates)
+    blocked = [x for x in current.get("blocked", []) if isinstance(x, str) and _valid_ip(x)]
+    current["blocked"] = blocked[-500:]
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(current, ensure_ascii=False))
+    tmp.chmod(0o600)
+    os.replace(tmp, STATE)
+
+
 def heartbeat() -> dict:
     payload = {
         "node": NODE_NAME,
@@ -72,11 +91,15 @@ def heartbeat() -> dict:
     payload["signature"] = sign_heartbeat(payload, SECRET)
     result = _request("/heartbeat", payload)
     applied = []
+    blocked = set(_local_blocked())
     for command in result.get("commands", []):
         if command.get("action") == "block" and _valid_ip(str(command.get("ip", ""))):
             ip = str(command["ip"])
             ok = apply_block(ip, int(command.get("until", 0)))
             applied.append({"ip": ip, "ok": ok})
+            if ok:
+                blocked.add(ip)
+    _save_state(last_ok=time.time(), commands=result.get("commands", []), applied=applied, blocked=sorted(blocked))
     result["applied"] = applied
     return result
 
@@ -106,18 +129,10 @@ def apply_block(ip: str, until: int) -> bool:
 def run() -> None:
     while True:
         try:
-            result = heartbeat()
-            STATE.parent.mkdir(parents=True, exist_ok=True)
-            STATE.write_text(json.dumps({"last_ok": time.time(), "commands": result.get("commands", []), "applied": result.get("applied", [])}))
-            try:
-                STATE.chmod(0o600)
-            except OSError:
-                pass
+            heartbeat()
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
-            STATE.parent.mkdir(parents=True, exist_ok=True)
-            STATE.write_text(json.dumps({"last_error": f"{type(exc).__name__}: {exc}", "last_attempt": time.time()}))
             try:
-                STATE.chmod(0o600)
+                _save_state(last_error=f"{type(exc).__name__}: {exc}", last_attempt=time.time())
             except OSError:
                 pass
         time.sleep(INTERVAL)
