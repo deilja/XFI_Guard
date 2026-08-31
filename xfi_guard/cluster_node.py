@@ -6,6 +6,7 @@ import os
 import secrets
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -20,7 +21,22 @@ MASTER_URL = os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", "http://127.0.0.1:8765").
 TOKEN = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "")
 SECRET = os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
 INTERVAL = max(10, int(os.getenv("XFI_GUARD_CLUSTER_HEARTBEAT_INTERVAL", "30")))
-STATE = Path(os.getenv("XFI_GUARD_CLUSTER_NODE_STATE", "/var/lib/xfi-guard/node-state.json"))
+
+
+def _default_state_path() -> Path:
+    configured = os.getenv("XFI_GUARD_CLUSTER_NODE_STATE")
+    if configured:
+        return Path(configured)
+    # Production runs as root and keeps state under /var/lib. Non-root CI and
+    # development processes must not need write access to a system directory.
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        root = Path(tempfile.gettempdir()) / f"xfi-guard-{os.getuid()}"
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return root / "node-state.json"
+    return Path("/var/lib/xfi-guard/node-state.json")
+
+
+STATE = _default_state_path()
 
 
 def _node_id() -> str:
@@ -107,22 +123,10 @@ def heartbeat() -> dict:
 def apply_block(ip: str, until: int) -> bool:
     bantime = max(60, until - int(time.time()))
     base = ["fail2ban-client", "set", "xfi-guard"]
-    configure = subprocess.run(
-        base + ["bantime", str(bantime)],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
+    configure = subprocess.run(base + ["bantime", str(bantime)], capture_output=True, text=True, timeout=15, check=False)
     if configure.returncode != 0:
         return False
-    p = subprocess.run(
-        base + ["banip", ip],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
+    p = subprocess.run(base + ["banip", ip], capture_output=True, text=True, timeout=15, check=False)
     return p.returncode == 0
 
 
