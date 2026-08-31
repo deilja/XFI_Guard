@@ -85,6 +85,11 @@ def blocks_view():
     for x in blocks[:40]:
         ns=x.get("nodes",{}) or {};lines += [f"🚫 {x.get('ip','-')}",f"   Источник: {x.get('source_node','-')}",f"   VPS: {sum(v=='blocked' for v in ns.values())} применено / {sum(v=='queued' for v in ns.values())} в очереди",f"   До: {x.get('until','-')}"]
     return "\n".join(lines+[f"… ещё {len(blocks)-40}"] if len(blocks)>40 else lines)[:3900]
+def _cluster_error_view(exc:Exception)->str:
+    message=str(exc)
+    if "XFI_GUARD_CLUSTER_TOKEN не задан" in message:
+        return "🌐 XFI GUARD • CLUSTER CENTER\n\n🔴 Cluster Master не настроен.\n\nXFI_GUARD_CLUSTER_TOKEN не задан.\n\nДобавьте токен в окружение xfi-guard-bot.service и перезапустите бота."
+    return "🖥 VPS-УЗЛЫ\n\n🔴 Не удалось получить список VPS.\n\n"+message[:700]
 async def _safe_edit(message,text,reply_markup):
     try: await message.edit_text(text,reply_markup=reply_markup)
     except TelegramBadRequest as exc:
@@ -108,9 +113,9 @@ def install_cluster_handlers(dp,main_kb):
                 data=await asyncio.to_thread(_request,"/nodes")
                 text="🖥 VPS-УЗЛЫ\n\n"+_format_nodes(data)
             except Exception as exc:
-                text="🖥 VPS-УЗЛЫ\n\n🔴 Cluster Master недоступен.\n\n"+str(exc)
+                text=_cluster_error_view(exc)
         await _safe_edit(c.message,text[:3900],_buttons())
-        await c.answer("VPS-узлы" if "🔴" not in text else "Cluster Master недоступен",show_alert="🔴" in text)
+        await c.answer("VPS-узлы" if not text.startswith("🖥 VPS-УЗЛЫ\n\n🔴") and not text.startswith("🌐 XFI GUARD • CLUSTER CENTER\n\n🔴") else "Cluster Master недоступен",show_alert=text.startswith("🖥 VPS-УЗЛЫ\n\n🔴") or text.startswith("🌐 XFI GUARD • CLUSTER CENTER\n\n🔴"))
     @dp.callback_query(F.data.startswith("cluster:detail:"))
     async def detail(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
