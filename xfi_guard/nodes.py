@@ -1,6 +1,6 @@
 """Multi-VPS inventory, diagnostics and safe SSH host-key enrollment."""
 from __future__ import annotations
-import ipaddress, json, os, re, subprocess, tomllib
+import base64, hashlib, ipaddress, json, os, re, subprocess, tomllib
 from dataclasses import dataclass
 from pathlib import Path
 DEFAULT_IDENTITY_FILE=Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
@@ -36,20 +36,34 @@ def _ssh_base(node:Node)->list[str]:
     identity=Path(os.path.expanduser(node.identity_file)); cmd=["ssh","-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=yes","-o","ConnectTimeout=8"]
     if identity.is_file():cmd += ["-i",str(identity)]
     return cmd+["-p",str(node.port),f"{node.user}@{node.host}"]
+def _key_fingerprint(line:str)->str:
+    parts=line.strip().split()
+    if len(parts)<3: raise ValueError("invalid SSH host key")
+    raw=base64.b64decode(parts[2],validate=True)
+    return "SHA256:"+base64.b64encode(hashlib.sha256(raw).digest()).decode().rstrip("=")
+def _expected_fingerprint(node:Node)->str:
+    safe=re.sub(r"[^A-Za-z0-9]","_",node.name).upper()
+    value=os.getenv(f"XFI_GUARD_SSH_FP_{safe}","").strip()
+    if not value: raise ValueError(f"No trusted SSH fingerprint configured for node {node.name}")
+    if not value.startswith("SHA256:"): raise ValueError("SSH fingerprint must use SHA256: format")
+    return value
 def host_key_fingerprint(node:Node,timeout:int=10)->tuple[bool,str]:
     cmd=["ssh-keyscan","-T",str(max(1,timeout)),"-t","ed25519","-p",str(node.port),node.host]
     try:
         p=subprocess.run(cmd,text=True,capture_output=True,timeout=timeout+3,check=False); lines=[x.strip() for x in p.stdout.splitlines() if x.strip() and not x.startswith("#")]
         if p.returncode!=0 or not lines:return False,(p.stderr or "ssh-keyscan returned no key").strip()[:300]
-        fp=subprocess.run(["ssh-keygen","-lf","-","-E","sha256"],input=lines[0]+"\n",text=True,capture_output=True,timeout=5,check=False); parts=fp.stdout.split()
-        return (True,parts[1] if fp.returncode==0 and len(parts)>1 else fp.stdout.strip())
+        fp=_key_fingerprint(lines[0]); return True,fp
     except Exception as exc:return False,f"{type(exc).__name__}: {exc}"
 def enroll_host_key(node:Node,timeout:int=10)->tuple[bool,str]:
+    try: expected=_expected_fingerprint(node)
+    except ValueError as exc:return False,str(exc)
     ssh_dir=Path(os.path.expanduser("~/.ssh")); ssh_dir.mkdir(mode=0o700,parents=True,exist_ok=True); known=ssh_dir/"known_hosts"; known.touch(mode=0o600,exist_ok=True); cmd=["ssh-keyscan","-T",str(max(1,timeout)),"-t","ed25519","-p",str(node.port),node.host]
     try:
         p=subprocess.run(cmd,text=True,capture_output=True,timeout=timeout+3,check=False); lines=[x for x in p.stdout.splitlines() if x and not x.startswith("#")]
         if p.returncode!=0 or not lines:return False,(p.stderr or "ssh-keyscan returned no key").strip()[:300]
-        existing=known.read_text(encoding="utf-8",errors="replace"); additions=[x for x in lines if x not in existing]
+        matching=[x for x in lines if _key_fingerprint(x)==expected]
+        if not matching:return False,f"SSH host fingerprint mismatch for {node.name}"
+        existing=known.read_text(encoding="utf-8",errors="replace"); additions=[x for x in matching if x not in existing]
         if additions:
             with known.open("a",encoding="utf-8") as f:
                 for line in additions:f.write(line+"\n")
