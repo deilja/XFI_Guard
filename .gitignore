@@ -15,6 +15,11 @@ __pycache__/
 *.sqlite3
 *.log
 
+# Local configuration (tracked defaults live in config.toml)
+config.local.toml
+config.toml.local
+*.local.toml
+
 # Secrets / credentials
 *.pem
 *.key
