@@ -11,11 +11,18 @@ from .nodes import load_nodes,probe_node,restart_guard
 STATE_PATH=Path(os.getenv("XFI_GUARD_CLUSTER_STATE",str(Path.home()/".cache/xfi-guard/cluster-state.json")))
 DEFAULT_MASTER_URL="http://127.0.0.1:8765"
 def _master_url(): return os.getenv("XFI_GUARD_CLUSTER_MASTER_URL",DEFAULT_MASTER_URL).strip().rstrip("/") or DEFAULT_MASTER_URL
+def _validate_master_url(url:str)->str:
+    p=urlsplit(url)
+    if p.scheme not in {"http","https"} or not p.hostname or p.username or p.password:
+        raise RuntimeError("XFI_GUARD_CLUSTER_MASTER_URL имеет некорректный формат")
+    if p.scheme=="http" and p.hostname not in {"127.0.0.1","localhost","::1"}:
+        raise RuntimeError("Для удалённого Cluster Master требуется HTTPS")
+    return url
 def _timeout():
     try:return max(1.,min(15.,float(os.getenv("XFI_GUARD_CLUSTER_TIMEOUT","5"))))
     except ValueError:return 5.
 def _request(path):
-    req=urllib.request.Request(_master_url()+path,method="GET");token=os.getenv("XFI_GUARD_CLUSTER_TOKEN","").strip()
+    base=_validate_master_url(_master_url());req=urllib.request.Request(base+path,method="GET");token=os.getenv("XFI_GUARD_CLUSTER_TOKEN","").strip()
     if not token:raise RuntimeError("XFI_GUARD_CLUSTER_TOKEN не задан")
     req.add_header("Authorization",f"Bearer {token}")
     try:
