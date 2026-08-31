@@ -45,7 +45,6 @@ def run(*args: str, check: bool = True, timeout: int = 120) -> subprocess.Comple
 
 
 def _cleanup_generated() -> None:
-    """Remove Python/build artefacts that must never be restored from Git stash."""
     for relative in GENERATED_DIRS:
         path = REPO / relative
         if path.is_dir(): shutil.rmtree(path, ignore_errors=True)
@@ -102,17 +101,6 @@ def github_head() -> str:
 def local_head() -> str: return run("git", "rev-parse", "HEAD").stdout.strip()
 
 
-def worktree_clean() -> bool:
-    result = run("git", "status", "--porcelain", check=True).stdout.splitlines()
-    ignored_untracked_prefixes = ("?? build/", "?? xfi_guard.egg-info/", "?? xfi_guard/__pycache__/", "?? backup/", "?? .pytest_cache/", "?? tests/__pycache__/")
-    ignored_untracked_suffixes = (".bak", ".pyc")
-    for line in result:
-        if any(line.startswith(prefix) for prefix in ignored_untracked_prefixes): continue
-        if line.startswith("?? ") and line[3:].endswith(ignored_untracked_suffixes): continue
-        return False
-    return True
-
-
 def preserve_local_changes() -> str:
     _cleanup_generated()
     status = run("git", "status", "--porcelain").stdout.strip()
@@ -130,35 +118,25 @@ def restore_local_changes(stash: str) -> None:
     _cleanup_generated()
     result = run("git", "stash", "apply", "--index", stash, check=False, timeout=120)
     if result.returncode != 0:
-        _cleanup_generated()
-        retry = run("git", "stash", "apply", stash, check=False, timeout=120)
-        if retry.returncode != 0:
-            raise RuntimeError(f"Локальные изменения сохранены в stash {stash}, но не применились автоматически: {retry.stderr.strip()[-700:]}")
+        _cleanup_generated(); retry = run("git", "stash", "apply", stash, check=False, timeout=120)
+        if retry.returncode != 0: raise RuntimeError(f"Локальные изменения сохранены в stash {stash}, но не применились автоматически: {retry.stderr.strip()[-700:]}")
     run("git", "stash", "drop", stash, check=False, timeout=30)
 
 
 def _pid_alive(pid: int) -> bool:
     if pid <= 0: return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    try: os.kill(pid, 0); return True
+    except ProcessLookupError: return False
+    except PermissionError: return True
 
 
 def _read_lock_pid() -> int | None:
     try:
-        raw = LOCK_FILE.read_text(encoding="utf-8").strip()
-        pid = int(raw)
-        return pid if pid > 0 else None
-    except (FileNotFoundError, ValueError, OSError):
-        return None
+        pid = int(LOCK_FILE.read_text(encoding="utf-8").strip()); return pid if pid > 0 else None
+    except (FileNotFoundError, ValueError, OSError): return None
 
 
 def acquire_lock() -> bool:
-    """Acquire lock; recover only locks with no live owner."""
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -178,8 +156,7 @@ def acquire_lock() -> bool:
 
 
 def release_lock() -> None:
-    pid = _read_lock_pid()
-    if pid != os.getpid(): return
+    if _read_lock_pid() != os.getpid(): return
     try: LOCK_FILE.unlink()
     except FileNotFoundError: pass
 
@@ -225,29 +202,27 @@ def _install(remote: str, old: str) -> None:
     if not bot_healthy(): raise RuntimeError("Новая версия не прошла проверку работоспособности")
 
 
-def check_update() -> int:
-    if not acquire_lock(): return 0
-    try:
-        current = local_head(); remote = github_head()
-        if current == remote: clear_notified(); _write_status("актуально", "XFI Guard уже обновлён.", current, remote); return 0
-        if read_notified() == remote: return 0
-        text = f"🆕 Доступно обновление XFI Guard\n\nТекущая версия: {current[:8]}\nНовая версия: {remote[:8]}\n\nНажмите кнопку для установки."
-        if notify(text, [[{"text": "⬆️ Обновить XFI Guard", "callback_data": "xfi_update"}]]): write_notified(remote)
-        _write_status("доступно", text, current, remote); return 0
-    except Exception as exc: _write_status("ошибка", str(exc)); print(f"Update check failed: {type(exc).__name__}: {exc}", file=sys.stderr); return 1
-    finally: release_lock()
+def _restore_environment(old: str, req: Path) -> None:
+    if req.exists():
+        subprocess.run([str(REPO / ".venv/bin/pip"), "install", "-r", str(req)], check=False, timeout=300)
+    validate(); subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30); subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60)
 
 
 def apply_update() -> int:
     if not acquire_lock(): notify("⚠️ Обновление XFI Guard уже выполняется."); return 2
-    old = ""; stash = ""
+    old = ""; stash = ""; requirements_snapshot = ""
     try:
-        old = local_head(); stash = preserve_local_changes(); _write_status("запущено", f"Начинаю обновление: {old[:8]}", old)
+        old = local_head(); stash = preserve_local_changes(); req = REPO / "requirements-bot.txt"
+        if req.exists(): requirements_snapshot = req.read_text(encoding="utf-8")
+        _write_status("запущено", f"Начинаю обновление: {old[:8]}", old)
         notify(f"⏳ Начинаю обновление XFI Guard\n\nВерсия: {old[:8]}\nЛокальные изменения сохранены: {'да' if stash else 'нет'}")
         run("git", "fetch", "--prune", "origin", "main", timeout=120); remote = run("git", "rev-parse", "origin/main").stdout.strip()
         if old == remote and not stash: clear_notified(); _write_status("актуально", "Сервер уже на актуальном main.", old, remote); return 0
-        _install(remote, old); restore_local_changes(stash); clear_notified(); _write_status("успешно", "XFI Guard успешно обновлён, локальные изменения восстановлены.", old, remote)
-        notify(f"✅ XFI Guard обновлён\n\nБыло: {old[:8]}\nСтало: {remote[:8]}\n\nЛокальные изменения сохранены и восстановлены. Бот работает."); return 0
+        _install(remote, old)
+        restore_local_changes(stash)
+        if not bot_healthy(): raise RuntimeError("Бот не прошёл повторную проверку после восстановления локальных изменений")
+        clear_notified(); _write_status("успешно", "XFI Guard успешно обновлён, локальные изменения восстановлены.", old, remote)
+        notify(f"✅ XFI Guard обновлён\n\nБыло: {old[:8]}\nСтало: {remote[:8]}\n\nЛокальные изменения восстановлены. Бот работает."); return 0
     except Exception as exc:
         rollback_ok = False
         try:
@@ -256,7 +231,11 @@ def apply_update() -> int:
                 if stash:
                     try: restore_local_changes(stash)
                     except Exception as restore_exc: print(f"Local change restore after rollback failed: {restore_exc}", file=sys.stderr)
-                subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30); subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60); rollback_ok = bot_healthy(); clear_notified()
+                if requirements_snapshot:
+                    req.write_text(requirements_snapshot, encoding="utf-8")
+                _restore_environment(old, req)
+                rollback_ok = bot_healthy()
+                clear_notified()
         except Exception as rollback_exc: print(f"Rollback failed: {type(rollback_exc).__name__}: {rollback_exc}", file=sys.stderr)
         _write_status("ошибка", str(exc), old); notify(f"❌ Обновление XFI Guard не удалось\n\nОшибка: {type(exc).__name__}: {str(exc)[:650]}\n\nАвтоматический откат: {'✅ выполнен' if rollback_ok else '❌ НЕ выполнен'}\n\nЛокальные изменения не удалены."); return 1
     finally: release_lock()
