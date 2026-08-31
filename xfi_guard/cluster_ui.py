@@ -54,7 +54,7 @@ def _resolve_node_ref(ref:str):
     for node in load_nodes():
         if hmac.compare_digest(_node_ref(node.name),ref): return node
     return None
-def _buttons(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data="cluster:refresh")],[InlineKeyboardButton(text="🖥 VPS-узлы",callback_data="cluster:nodes")],[InlineKeyboardButton(text="🌐 Глобальные блокировки",callback_data="cluster:blocks")],[InlineKeyboardButton(text="⬅️ Главное меню",callback_data="cluster:menu")]])
+def _buttons(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить",callback_data="cluster:refresh")],[InlineKeyboardButton(text="➕ Добавить VPS",callback_data="cluster:add")],[InlineKeyboardButton(text="🖥 VPS-узлы",callback_data="cluster:nodes")],[InlineKeyboardButton(text="🌐 Глобальные блокировки",callback_data="cluster:blocks")],[InlineKeyboardButton(text="⬅️ Главное меню",callback_data="cluster:menu")]])
 def _state_blocks():
     try:return json.loads(STATE_PATH.read_text()).get("blocks",{})
     except (FileNotFoundError,OSError,ValueError):return {}
@@ -95,6 +95,7 @@ async def _safe_edit(message,text,reply_markup):
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower(): raise
 def install_cluster_handlers(dp,main_kb):
+    from .cluster_add_ui import install_cluster_add_handlers
     @dp.message(F.text.in_({"🌐 Кластер","🌐 Cluster Center"}))
     async def cluster_button(m):
         if authorized(m):await m.answer(cluster_view(),reply_markup=_buttons())
@@ -142,3 +143,4 @@ def install_cluster_handlers(dp,main_kb):
     async def menu(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         await _safe_edit(c.message,"🏠 Главное меню\n\nВыберите раздел в нижнем меню.",None);await c.answer()
+    install_cluster_add_handlers(dp)
