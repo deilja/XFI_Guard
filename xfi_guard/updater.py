@@ -24,6 +24,10 @@ ROLLBACK_BRANCH = "xfi-guard-pre-update"
 LOCAL_STASH_PREFIX = "xfi-guard-auto-preserve"
 GENERATED_DIRS = ("xfi_guard/__pycache__", "tests/__pycache__", ".pytest_cache", "xfi_guard.egg-info")
 
+# Stable notification contract strings used by compatibility tests and administrators.
+UPDATE_SUCCESS_MESSAGE = "XFI Guard обновлён"
+UPDATE_FAILURE_MESSAGE = "Обновление XFI Guard не удалось"
+
 
 def _load_env_file() -> None:
     if not ENV_FILE.is_file(): return
@@ -155,7 +159,7 @@ def apply_update() -> int:
         _write_status("обновление", "Устанавливается новая версия.", old, remote)
         run("git", "branch", "-f", ROLLBACK_BRANCH, old); _install(remote); restore_local_changes(stash)
         if not bot_healthy(): raise RuntimeError("Бот не прошёл повторный health-check")
-        _write_status("успешно", "Обновление завершено.", old, remote); notify(f"✅ XFI Guard обновлён\nБыло: {old[:8]}\nСтало: {remote[:8]}\nБот работает."); return 0
+        _write_status("успешно", "Обновление завершено.", old, remote); notify(f"✅ {UPDATE_SUCCESS_MESSAGE}\nБыло: {old[:8]}\nСтало: {remote[:8]}\nБот работает."); return 0
     except Exception as exc:
         rollback_ok = False
         try:
@@ -169,7 +173,7 @@ def apply_update() -> int:
                 subprocess.run(["systemctl", "daemon-reload"], check=False, timeout=30); subprocess.run(["systemctl", "restart", SERVICE], check=False, timeout=60)
                 rollback_ok = bot_healthy()
         except Exception as rollback_exc: print(f"Rollback failed: {type(rollback_exc).__name__}: {rollback_exc}", file=sys.stderr)
-        _write_status("ошибка", str(exc), old); notify(f"❌ Обновление не удалось. Откат: {'успешен' if rollback_ok else 'НЕ УДАЛОСЬ'}"); return 1
+        _write_status("ошибка", str(exc), old); notify(f"❌ {UPDATE_FAILURE_MESSAGE}. Откат: {'успешен' if rollback_ok else 'НЕ УДАЛОСЬ'}"); return 1
     finally: release_lock()
 
 
