@@ -6,6 +6,9 @@ import shlex
 import subprocess
 from pathlib import Path
 
+# Canonical XFI Guard cluster SSH identity shared by node enrollment and UI.
+DEFAULT_IDENTITY_FILE = Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
+
 
 def _local_cluster_settings() -> tuple[str, str, str]:
     """Read cluster credentials only on the XFI Guard controller during provisioning."""
