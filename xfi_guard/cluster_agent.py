@@ -5,6 +5,7 @@ import argparse
 import json
 import logging
 import os
+import ssl
 import time
 import urllib.request
 
@@ -15,13 +16,21 @@ from .firewall import list_blocked_ips
 LOG = logging.getLogger("xfi_guard.cluster_agent")
 
 
+def _ssl_context() -> ssl.SSLContext | None:
+    """Use normal TLS verification unless explicitly disabled for a self-signed master."""
+    if os.getenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "").strip().lower() in {"1", "true", "yes"}:
+        return ssl._create_unverified_context()
+    return None
+
+
 def _post(url: str, payload: dict, token: str = "") -> dict:
     body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, body, method="POST", headers=headers)
-    with urllib.request.urlopen(req, timeout=10) as response:
+    context = _ssl_context() if url.lower().startswith("https://") else None
+    with urllib.request.urlopen(req, timeout=10, context=context) as response:
         return json.loads(response.read().decode())
 
 
