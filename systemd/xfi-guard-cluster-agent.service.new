@@ -1,0 +1,22 @@
+[Unit]
+Description=XFI Guard Multi-VPS Cluster Agent
+After=network-online.target xfi-guard.service fail2ban.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/xfi-guard
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/xfi-guard/cluster.env
+ExecStart=/opt/xfi-guard/.venv/bin/python -m xfi_guard.cluster_node
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/xfi-guard /var/log/xfi-guard
+
+[Install]
+WantedBy=multi-user.target
