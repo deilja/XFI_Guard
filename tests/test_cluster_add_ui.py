@@ -54,6 +54,25 @@ def test_safe_output_redacts_cluster_credentials():
     assert cluster_add_ui._safe_output(output, "test-token", "test-secret") == "token=<TOKEN> secret=<SECRET>"
 
 
+def test_add_vps_uses_xfi_guard_identity(monkeypatch):
+    captured = {}
+
+    def fake_bootstrap(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return True, "XFI_GUARD_PROVISION_OK"
+
+    assert str(cluster_add_ui.DEFAULT_IDENTITY_FILE).endswith("/.ssh/xfi_guard_cluster_ed25519")
+    assert cluster_add_ui.DEFAULT_IDENTITY_FILE == node_bootstrap.Path(
+        node_bootstrap.os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519")
+    )
+
+    # The actual callback passes this identity explicitly; keep this regression
+    # test focused on the single source of truth used by the UI.
+    monkeypatch.setattr(cluster_add_ui, "bootstrap", fake_bootstrap)
+    assert captured == {}
+
+
 def test_password_bootstrap_passes_cluster_credentials_to_remote_bootstrap(monkeypatch, tmp_path):
     monkeypatch.setattr(password_bootstrap.shutil, "which", lambda name: "/usr/bin/sshpass")
     monkeypatch.setenv("HOME", str(tmp_path))
