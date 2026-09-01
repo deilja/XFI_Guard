@@ -19,6 +19,7 @@ trap cleanup EXIT
 preserve_file(){ local src="$1" dst="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')"; [[ -f "$src" ]] || return 0; cp -a "$src" "$dst"; log "Сохранена конфигурация: $src"; }
 restore_file(){ local src="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')" dst="$1"; [[ -f "$src" ]] || return 0; install -d "$(dirname "$dst")"; cp -a "$src" "$dst"; chmod 600 "$dst" 2>/dev/null || true; log "Восстановлена конфигурация: $dst"; }
 
+# Preserve secrets before any git reset.
 preserve_file /etc/xfi-guard/bot.env
 preserve_file /var/lib/xfi-guard/ai.json
 preserve_file "$INSTALL_DIR/.env"
@@ -43,8 +44,6 @@ restore_file /var/lib/xfi-guard/ai.json
 restore_file "$INSTALL_DIR/.env"
 restore_file "$INSTALL_DIR/.env.local"
 
-# Run the repository test suite before enabling services. A failed test aborts
-# installation instead of deploying an unverified Agent/Master implementation.
 log "Запуск pytest"
 "$INSTALL_DIR/.venv/bin/python" -m pytest -q || die "pytest завершился с ошибкой; сервисы не будут включены"
 
