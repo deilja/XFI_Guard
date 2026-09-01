@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import socket
+import ssl
 import subprocess
 import tempfile
 import time
@@ -21,6 +22,13 @@ MASTER_URL = os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", "http://127.0.0.1:8765").
 TOKEN = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "")
 SECRET = os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
 INTERVAL = max(10, int(os.getenv("XFI_GUARD_CLUSTER_HEARTBEAT_INTERVAL", "30")))
+
+
+def _ssl_context() -> ssl.SSLContext | None:
+    """Honor the explicit self-signed-master compatibility switch."""
+    if os.getenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "").strip().lower() in {"1", "true", "yes"}:
+        return ssl._create_unverified_context()
+    return None
 
 
 def _default_state_path() -> Path:
@@ -59,7 +67,8 @@ def _request(path: str, payload: dict) -> dict:
     req = urllib.request.Request(MASTER_URL + path, data=body, method="POST", headers={"Content-Type": "application/json"})
     if TOKEN:
         req.add_header("Authorization", f"Bearer {TOKEN}")
-    with urllib.request.urlopen(req, timeout=10) as response:
+    context = _ssl_context() if MASTER_URL.lower().startswith("https://") else None
+    with urllib.request.urlopen(req, timeout=10, context=context) as response:
         return json.loads(response.read().decode())
 
 
