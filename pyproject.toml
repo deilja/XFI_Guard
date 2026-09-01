@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xfi-guard"
-version = "0.1.4"
+version = "0.1.5"
 description = "Security and monitoring toolkit for VPS infrastructure"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
     "pydantic>=2.7,<3",
     "requests>=2.31,<3",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
 
 [tool.setuptools.packages.find]
 include = ["xfi_guard*"]
