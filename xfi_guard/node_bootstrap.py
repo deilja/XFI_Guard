@@ -6,7 +6,6 @@ import shlex
 import subprocess
 from pathlib import Path
 
-# Canonical XFI Guard cluster SSH identity shared by node enrollment and UI.
 DEFAULT_IDENTITY_FILE = Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
 
 
@@ -29,7 +28,7 @@ def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60,
               identity_file: str | None = None, *, node_id: str | None = None,
               cluster_master: str | None = None, cluster_secret: str | None = None,
               cluster_token: str | None = None) -> tuple[bool, str]:
-    """Install/repair XFI Guard, protection stack and automatically enroll the VPS in the cluster."""
+    """Install/repair XFI Guard and enroll a VPS only after a real Master heartbeat."""
     if not host or any(c.isspace() for c in host):
         return False, "invalid host"
     if not 1 <= int(port) <= 65535:
@@ -41,18 +40,18 @@ def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60,
     cluster_secret = cluster_secret or local_secret
     cluster_token = cluster_token or local_token
     node_id = node_id or host
-    cluster_enabled = bool(cluster_master and cluster_secret and node_id)
+    cluster_enabled = bool(cluster_master and cluster_secret and cluster_token and node_id)
 
     remote = r'''set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq
-  apt-get install -y -qq git ca-certificates python3 python3-venv python3-pip fail2ban ufw
+  apt-get install -y -qq git ca-certificates python3 python3-venv python3-pip fail2ban ufw curl
 elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y git ca-certificates python3 python3-pip fail2ban firewalld
+  dnf install -y git ca-certificates python3 python3-pip fail2ban firewalld curl
 elif command -v yum >/dev/null 2>&1; then
-  yum install -y git ca-certificates python3 python3-pip fail2ban
+  yum install -y git ca-certificates python3 python3-pip fail2ban curl
 else
   echo 'UNSUPPORTED_PACKAGE_MANAGER'
   exit 30
@@ -97,14 +96,38 @@ fi
 install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
 '''
     if cluster_enabled:
+        # Credentials are written only on the target VPS with mode 0600.
         remote += "\n# XFI Guard cluster enrollment\n"
-        remote += "cat > /etc/xfi-guard/cluster.env <<'XFI_CLUSTER_ENV'\n"
-        remote += "XFI_GUARD_CLUSTER_MASTER_URL=" + shlex.quote(cluster_master) + "\n"
-        remote += "XFI_GUARD_CLUSTER_SECRET=" + shlex.quote(cluster_secret) + "\n"
-        remote += "XFI_GUARD_CLUSTER_TOKEN=" + shlex.quote(cluster_token or "") + "\n"
-        remote += "XFI_GUARD_CLUSTER_NODE_ID=" + shlex.quote(node_id) + "\n"
-        remote += "XFI_CLUSTER_ENV\nchmod 0600 /etc/xfi-guard/cluster.env\n"
-        remote += "install -m 0644 systemd/xfi-guard-cluster-agent.service /etc/systemd/system/xfi-guard-cluster-agent.service\n"
+        remote += "CLUSTER_MASTER=" + shlex.quote(cluster_master) + "\n"
+        remote += "CLUSTER_SECRET=" + shlex.quote(cluster_secret) + "\n"
+        remote += "CLUSTER_TOKEN=" + shlex.quote(cluster_token) + "\n"
+        remote += "CLUSTER_NODE_ID=" + shlex.quote(node_id) + "\n"
+        # Fail before installing/enabling the Agent if the supplied Master is not healthy.
+        remote += r'''
+python3 - <<'PY'
+import json, os, urllib.request
+master=os.environ.get("CLUSTER_MASTER", "").rstrip("/")
+token=os.environ.get("CLUSTER_TOKEN", "")
+if not master or not token:
+    raise SystemExit("CLUSTER_MASTER and CLUSTER_TOKEN are required")
+req=urllib.request.Request(master + "/health", headers={"Authorization": "Bearer " + token})
+with urllib.request.urlopen(req, timeout=10) as response:
+    data=json.loads(response.read().decode())
+if data.get("ok") is not True:
+    raise SystemExit("Cluster Master /health is not healthy")
+print("CLUSTER_MASTER_HEALTHY")
+PY
+cat > /etc/xfi-guard/cluster.env <<'XFI_CLUSTER_ENV'
+XFI_GUARD_CLUSTER_MASTER_URL=$CLUSTER_MASTER
+XFI_GUARD_CLUSTER_SECRET=$CLUSTER_SECRET
+XFI_GUARD_CLUSTER_TOKEN=$CLUSTER_TOKEN
+XFI_GUARD_CLUSTER_NODE_ID=$CLUSTER_NODE_ID
+XFI_CLUSTER_ENV
+chmod 0600 /etc/xfi-guard/cluster.env
+install -m 0644 systemd/xfi-guard-cluster-agent.service /etc/systemd/system/xfi-guard-cluster-agent.service
+'''
+    else:
+        remote += "\ncluster_enabled=false\n"
     remote += r'''
 systemctl daemon-reload
 systemctl enable --now fail2ban
@@ -113,13 +136,50 @@ fail2ban-client status xfi-guard >/dev/null
 systemctl enable --now xfi-guard.service
 '''
     if cluster_enabled:
-        remote += r'''systemctl enable --now xfi-guard-cluster-agent.service
-sleep 3
+        remote += r'''
+systemctl enable --now xfi-guard-cluster-agent.service
+sleep 2
 cluster_state="$(systemctl is-active xfi-guard-cluster-agent.service || true)"
+if [ "$cluster_state" != "active" ]; then
+  echo "CLUSTER_AGENT_NOT_ACTIVE"
+  systemctl --no-pager --full status xfi-guard-cluster-agent.service || true
+  exit 41
+fi
+
+# Registration success is defined by a NEW heartbeat visible on the Master.
+# Do not trust systemd active state alone and do not emit a green success marker
+# until /nodes contains this exact node_id with a fresh last_seen.
+heartbeat_ok=false
+for _ in $(seq 1 15); do
+  if CLUSTER_MASTER="$CLUSTER_MASTER" CLUSTER_TOKEN="$CLUSTER_TOKEN" CLUSTER_NODE_ID="$CLUSTER_NODE_ID" python3 - <<'PY'
+import json, os, urllib.request
+master=os.environ["CLUSTER_MASTER"].rstrip("/")
+token=os.environ["CLUSTER_TOKEN"]
+node_id=os.environ["CLUSTER_NODE_ID"]
+req=urllib.request.Request(master + "/nodes", headers={"Authorization": "Bearer " + token})
+with urllib.request.urlopen(req, timeout=10) as response:
+    data=json.loads(response.read().decode())
+for node in data.get("nodes", []):
+    if node.get("name") == node_id and node.get("online") is True:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+  then
+    heartbeat_ok=true
+    break
+  fi
+  sleep 2
+done
+if [ "$heartbeat_ok" != true ]; then
+  echo "CLUSTER_HEARTBEAT_NOT_CONFIRMED"
+  echo "Agent is active, but Master did not confirm a fresh heartbeat; VPS is NOT registered successfully."
+  exit 42
+fi
 '''
     else:
         remote += "cluster_state=not-configured\n"
-    remote += r'''sleep 2
+    remote += r'''
+sleep 2
 xfi_state="$(systemctl is-active xfi-guard.service || true)"
 f2b_state="$(systemctl is-active fail2ban.service || true)"
 jail_state="$(fail2ban-client status xfi-guard 2>/dev/null | awk '/Currently banned:/ {print $NF}' || true)"
@@ -134,6 +194,15 @@ if [ "$ufw_state" = inactive ]; then
   printf 'UFW_NOTE=installed_but_left_disabled_to_preserve_unknown_VPN_panel_ports\n'
 fi
 '''
+    # Quote the cluster variables into the remote shell before execution.
+    if cluster_enabled:
+        prefix = (
+            "export CLUSTER_MASTER=" + shlex.quote(cluster_master) + "\n"
+            "export CLUSTER_SECRET=" + shlex.quote(cluster_secret) + "\n"
+            "export CLUSTER_TOKEN=" + shlex.quote(cluster_token) + "\n"
+            "export CLUSTER_NODE_ID=" + shlex.quote(node_id) + "\n"
+        )
+        remote = prefix + remote
     cmd = ["ssh"]
     if identity_file:
         identity = Path(os.path.expanduser(identity_file))
@@ -145,7 +214,7 @@ fi
             target, "bash", "-s"]
     try:
         p = subprocess.run(cmd, input=remote, text=True, capture_output=True,
-                           timeout=int(timeout) + 30, check=False)
+                           timeout=int(timeout) + 60, check=False)
     except Exception as exc:
         return False, f"SSH error: {type(exc).__name__}: {exc}"
     output = (p.stdout + "\n" + p.stderr).strip()
