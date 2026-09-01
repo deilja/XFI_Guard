@@ -13,7 +13,18 @@ import subprocess
 from pathlib import Path
 
 
-def bootstrap_with_password(host: str, user: str, port: int, password: str, timeout: int = 60) -> tuple[bool, str]:
+def bootstrap_with_password(
+    host: str,
+    user: str,
+    port: int,
+    password: str,
+    timeout: int = 60,
+    *,
+    node_id: str | None = None,
+    cluster_master: str | None = None,
+    cluster_secret: str | None = None,
+    cluster_token: str | None = None,
+) -> tuple[bool, str]:
     if not password:
         return False, "SSH пароль пустой"
     if not shutil.which("sshpass"):
@@ -28,7 +39,13 @@ def bootstrap_with_password(host: str, user: str, port: int, password: str, time
     key = ssh_dir / "xfi_guard_cluster_ed25519"
     pub = Path(str(key) + ".pub")
     if not key.exists():
-        p = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], text=True, capture_output=True, timeout=10, check=False)
+        p = subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
         if p.returncode != 0:
             return False, (p.stderr or "ssh-keygen failed")[:500]
     if not pub.exists():
@@ -37,25 +54,57 @@ def bootstrap_with_password(host: str, user: str, port: int, password: str, time
     env = os.environ.copy()
     env["SSHPASS"] = password
     target = f"{user}@{host}"
-    ssh_options = ["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", "-p", str(port)]
-    remote = "key=$(cat); mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; grep -qxF \"$key\" ~/.ssh/authorized_keys || printf '%s\\n' \"$key\" >> ~/.ssh/authorized_keys"
+    ssh_options = [
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=10",
+        "-p", str(port),
+    ]
+    remote = (
+        "key=$(cat); mkdir -p ~/.ssh; chmod 700 ~/.ssh; "
+        "touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; "
+        "grep -qxF \"$key\" ~/.ssh/authorized_keys || "
+        "printf '%s\\n' \"$key\" >> ~/.ssh/authorized_keys"
+    )
     try:
         with pub.open("r", encoding="utf-8") as fh:
             command = ["sshpass", "-e", "ssh", *ssh_options, target, remote]
-            p = subprocess.run(command, stdin=fh, text=True, capture_output=True, timeout=timeout, env=env, check=False)
+            p = subprocess.run(
+                command,
+                stdin=fh,
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                env=env,
+                check=False,
+            )
         if p.returncode != 0:
             return False, (p.stderr or p.stdout or "SSH password authentication failed")[-1200:]
+
         subprocess.run(["chmod", "600", str(key)], check=False)
         test = [
-            "ssh", "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-p", str(port), target, "true",
+            "ssh", "-i", str(key),
+            "-o", "IdentitiesOnly=yes",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "ConnectTimeout=10",
+            "-p", str(port), target, "true",
         ]
         verify = subprocess.run(test, text=True, capture_output=True, timeout=timeout, check=False)
         if verify.returncode != 0:
             return False, (verify.stderr or "SSH key verification failed")[-1200:]
 
         from .node_bootstrap import bootstrap
-        ok, result = bootstrap(host, user, port, timeout, str(key))
+        ok, result = bootstrap(
+            host,
+            user,
+            port,
+            timeout,
+            str(key),
+            node_id=node_id or host,
+            cluster_master=cluster_master,
+            cluster_secret=cluster_secret,
+            cluster_token=cluster_token,
+        )
         if not ok:
             return False, "SSH ключ установлен, но автоматическая настройка защиты не завершена:\n" + result[-2400:]
         return True, "SSH ключ установлен. Пароль не сохранён.\n\nАвтоматически настроено:\n" + result[-2400:]
