@@ -12,6 +12,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, C
 from .admin_auth import authorized
 from .cluster_ui import _validate_master_url
 from .node_bootstrap import bootstrap
+from .nodes import DEFAULT_IDENTITY_FILE
 
 
 class AddVPSStates(StatesGroup):
@@ -120,7 +121,7 @@ def install_cluster_add_handlers(dp) -> None:
         await c.message.answer(
             "➕ ДОБАВЛЕНИЕ VPS\n\n"
             "Введите IP-адрес или hostname нового VPS.\n\n"
-            "SSH должен быть доступен с Cluster Master. Если ключ XFI Guard ещё не установлен, после проверки будет предложена авторизация по паролю.",
+            "SSH подключение выполняется ключом XFI Guard. Если ключ ещё не установлен на VPS, после отказа будет предложена авторизация по паролю.",
             reply_markup=_cancel_kb(),
         )
         await c.answer()
@@ -219,7 +220,7 @@ def install_cluster_add_handlers(dp) -> None:
         )
         try:
             ok, output = await asyncio.to_thread(
-                bootstrap, host, user, port, 60, None,
+                bootstrap, host, user, port, 60, str(DEFAULT_IDENTITY_FILE),
                 node_id=host, cluster_master=master,
                 cluster_secret=secret, cluster_token=token,
             )
