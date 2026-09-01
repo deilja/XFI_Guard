@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from xfi_guard import cluster_add_ui, cluster_ui, node_bootstrap, password_bootstrap
@@ -55,8 +56,9 @@ def test_safe_output_redacts_cluster_credentials():
 
 
 def test_add_vps_uses_same_xfi_guard_identity_as_node_bootstrap():
+    expected = Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
     assert cluster_add_ui.DEFAULT_IDENTITY_FILE == node_bootstrap.DEFAULT_IDENTITY_FILE
-    assert cluster_add_ui.DEFAULT_IDENTITY_FILE == Path("/root/.ssh/xfi_guard_cluster_ed25519")
+    assert cluster_add_ui.DEFAULT_IDENTITY_FILE == expected
 
 
 def test_password_bootstrap_passes_cluster_credentials_to_remote_bootstrap(monkeypatch, tmp_path):
