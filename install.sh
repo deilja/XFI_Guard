@@ -19,7 +19,6 @@ trap cleanup EXIT
 preserve_file(){ local src="$1" dst="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')"; [[ -f "$src" ]] || return 0; cp -a "$src" "$dst"; log "Сохранена конфигурация: $src"; }
 restore_file(){ local src="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')" dst="$1"; [[ -f "$src" ]] || return 0; install -d "$(dirname "$dst")"; cp -a "$src" "$dst"; chmod 600 "$dst" 2>/dev/null || true; log "Восстановлена конфигурация: $dst"; }
 
-# Preserve secrets before any git reset
 preserve_file /etc/xfi-guard/bot.env
 preserve_file /var/lib/xfi-guard/ai.json
 preserve_file "$INSTALL_DIR/.env"
@@ -36,6 +35,7 @@ cd "$INSTALL_DIR"
 "$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/python" -m pip install --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade .
+"$INSTALL_DIR/.venv/bin/pip" install --upgrade 'pytest>=8,<9'
 install -d -m 0755 /var/log/xfi-guard
 install -d -m 0700 /var/lib/xfi-guard /etc/xfi-guard
 restore_file /etc/xfi-guard/bot.env
@@ -43,8 +43,11 @@ restore_file /var/lib/xfi-guard/ai.json
 restore_file "$INSTALL_DIR/.env"
 restore_file "$INSTALL_DIR/.env.local"
 
-# XFI Guard owns a dedicated Fail2Ban jail. Fail2Ban is the timed enforcement
-# layer so automatic threat bans expire after exactly one week.
+# Run the repository test suite before enabling services. A failed test aborts
+# installation instead of deploying an unverified Agent/Master implementation.
+log "Запуск pytest"
+"$INSTALL_DIR/.venv/bin/python" -m pytest -q || die "pytest завершился с ошибкой; сервисы не будут включены"
+
 install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d
 install -m 0644 config/fail2ban/filter.d/xfi-guard.conf /etc/fail2ban/filter.d/xfi-guard.conf
 install -m 0644 config/fail2ban/jail.d/xfi-guard.conf /etc/fail2ban/jail.d/xfi-guard.conf
