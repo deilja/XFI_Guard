@@ -20,8 +20,12 @@ LOG = logging.getLogger("xfi_guard.cluster_agent")
 
 
 def _ssl_context() -> ssl.SSLContext | None:
-    """Use normal TLS verification unless explicitly disabled for a self-signed master."""
+    """Verify TLS normally; allow explicit self-signed mode or a configured CA bundle."""
+    ca_file = os.getenv("XFI_GUARD_CLUSTER_TLS_CA_FILE", "").strip()
+    if ca_file:
+        return ssl.create_default_context(cafile=ca_file)
     if os.getenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "").strip().lower() in {"1", "true", "yes"}:
+        LOG.warning("cluster TLS certificate verification is DISABLED by explicit configuration")
         return ssl._create_unverified_context()
     return None
 
@@ -35,6 +39,18 @@ def _post(url: str, payload: dict, token: str = "") -> dict:
     context = _ssl_context() if url.lower().startswith("https://") else None
     with urllib.request.urlopen(req, timeout=10, context=context) as response:
         return json.loads(response.read().decode())
+
+
+def master_health(master: str, token: str = "") -> dict:
+    req = urllib.request.Request(master.rstrip("/") + "/health", method="GET")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    context = _ssl_context() if master.lower().startswith("https://") else None
+    with urllib.request.urlopen(req, timeout=10, context=context) as response:
+        data = json.loads(response.read().decode())
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        raise RuntimeError("Cluster Master /health is not healthy")
+    return data
 
 
 def heartbeat(master: str, node: str, secret: str, token: str = "") -> dict:
