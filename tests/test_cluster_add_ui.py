@@ -18,6 +18,14 @@ def test_add_vps_requires_master_url(monkeypatch):
     assert cluster_add_ui._master_url() == ""
 
 
+def test_bare_master_hostname_is_normalized_to_https():
+    assert cluster_add_ui._normalize_master_input("Ger.deilja.online") == "https://Ger.deilja.online"
+
+
+def test_full_master_url_is_normalized():
+    assert cluster_add_ui._normalize_master_input("https://ger.deilja.online/") == "https://ger.deilja.online"
+
+
 def test_add_vps_rejects_plain_http_remote_master():
     try:
         cluster_ui._validate_master_url("http://10.0.0.10:8765")
