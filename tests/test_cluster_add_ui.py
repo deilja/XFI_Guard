@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
 
-from xfi_guard import cluster_add_ui, cluster_ui, node_bootstrap, password_bootstrap
+from xfi_guard import cluster_add_ui, cluster_ui, password_bootstrap
+from xfi_guard.nodes import DEFAULT_IDENTITY_FILE
 
 
 def test_add_vps_requires_cluster_credentials(monkeypatch):
@@ -55,9 +56,9 @@ def test_safe_output_redacts_cluster_credentials():
     assert cluster_add_ui._safe_output(output, "test-token", "test-secret") == "token=<TOKEN> secret=<SECRET>"
 
 
-def test_add_vps_uses_same_xfi_guard_identity_as_node_bootstrap():
+def test_add_vps_uses_canonical_xfi_guard_identity():
     expected = Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
-    assert cluster_add_ui.DEFAULT_IDENTITY_FILE == node_bootstrap.DEFAULT_IDENTITY_FILE
+    assert cluster_add_ui.DEFAULT_IDENTITY_FILE == DEFAULT_IDENTITY_FILE
     assert cluster_add_ui.DEFAULT_IDENTITY_FILE == expected
 
 
@@ -96,7 +97,7 @@ def test_password_bootstrap_passes_cluster_credentials_to_remote_bootstrap(monke
         return True, "XFI_GUARD_PROVISION_OK"
 
     monkeypatch.setattr(password_bootstrap.subprocess, "run", fake_run)
-    monkeypatch.setattr(node_bootstrap, "bootstrap", fake_bootstrap)
+    monkeypatch.setattr(password_bootstrap, "bootstrap", fake_bootstrap)
 
     ok, output = password_bootstrap.bootstrap_with_password(
         "2.27.37.78",
