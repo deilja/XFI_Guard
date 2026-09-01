@@ -1,14 +1,17 @@
-"""Lightweight Multi-VPS cluster agent."""
+"""Lightweight authenticated Multi-VPS cluster agent."""
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import os
+import secrets
+import socket
 import ssl
 import time
 import urllib.request
 
+from .cluster_auth import sign_heartbeat
 from .cluster import make_event, register_global_block
 from .cluster_apply import fail2ban_block
 from .firewall import list_blocked_ips
@@ -24,7 +27,7 @@ def _ssl_context() -> ssl.SSLContext | None:
 
 
 def _post(url: str, payload: dict, token: str = "") -> dict:
-    body = json.dumps(payload).encode()
+    body = json.dumps(payload, ensure_ascii=False).encode()
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -35,8 +38,18 @@ def _post(url: str, payload: dict, token: str = "") -> dict:
 
 
 def heartbeat(master: str, node: str, secret: str, token: str = "") -> dict:
-    payload = {"node": node, "timestamp": time.time(), "status": "online", "blocked": list_blocked_ips()[:500]}
-    payload["event"] = make_event("1.1.1.1", node, 0, "info", 0, "heartbeat", secret)
+    """Send the heartbeat format expected by Cluster Master, including HMAC and nonce."""
+    payload = {
+        "node": node[:128],
+        "node_id": node[:128],
+        "timestamp": time.time(),
+        "nonce": secrets.token_urlsafe(24),
+        "hostname": socket.gethostname()[:255],
+        "blocked": list_blocked_ips()[:500],
+    }
+    if not secret:
+        raise RuntimeError("XFI_GUARD_CLUSTER_SECRET is not configured")
+    payload["signature"] = sign_heartbeat(payload, secret)
     return _post(master.rstrip("/") + "/heartbeat", payload, token)
 
 
