@@ -96,6 +96,43 @@ def test_node_module_builds_authenticated_heartbeat(monkeypatch):
     )
 
 
+def test_legacy_cluster_agent_builds_master_compatible_heartbeat(monkeypatch):
+    monkeypatch.setenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "true")
+    import xfi_guard.cluster_agent as agent
+    agent = importlib.reload(agent)
+    captured = {}
+
+    monkeypatch.setattr(agent, "list_blocked_ips", lambda: ["1.2.3.4"])
+
+    def fake_post(url, payload, token=""):
+        captured.update(url=url, payload=payload, token=token)
+        return {"ok": True, "commands": []}
+
+    monkeypatch.setattr(agent, "_post", fake_post)
+    result = agent.heartbeat("https://master.example", "node-1", "test-secret", "test-token")
+
+    assert result["ok"] is True
+    assert captured["url"] == "https://master.example/heartbeat"
+    assert captured["token"] == "test-token"
+    payload = captured["payload"]
+    assert payload["node"] == "node-1"
+    assert payload["node_id"] == "node-1"
+    assert payload["hostname"]
+    assert payload["nonce"]
+    assert payload["blocked"] == ["1.2.3.4"]
+    assert payload["signature"] == sign_heartbeat(
+        {k: v for k, v in payload.items() if k != "signature"},
+        "test-secret",
+    )
+
+
+def test_cluster_agent_supports_self_signed_master(monkeypatch):
+    monkeypatch.setenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "true")
+    import xfi_guard.cluster_agent as agent
+    agent = importlib.reload(agent)
+    assert agent._ssl_context() is not None
+
+
 def test_cluster_ui_default_master_url_is_local(monkeypatch):
     monkeypatch.delenv("XFI_GUARD_CLUSTER_MASTER_URL", raising=False)
     import xfi_guard.cluster_ui as ui
