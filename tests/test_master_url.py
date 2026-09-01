@@ -31,5 +31,10 @@ def test_master_must_not_be_this_vps(monkeypatch):
 def test_external_master_is_accepted(monkeypatch):
     monkeypatch.setattr(socket, "gethostname", lambda: "ger")
     monkeypatch.setattr(socket, "getfqdn", lambda: "ger.example")
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.51.100.10", 0))])
+
+    def fake_getaddrinfo(host, *args, **kwargs):
+        ip = "198.51.100.10" if host in {"ger", "ger.example"} else "203.0.113.10"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
     assert assert_master_not_this_vps("fin.example:8765") == "https://fin.example:8765"
