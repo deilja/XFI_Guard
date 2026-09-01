@@ -12,6 +12,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .node_bootstrap import bootstrap
+
 
 def bootstrap_with_password(
     host: str,
@@ -93,7 +95,6 @@ def bootstrap_with_password(
         if verify.returncode != 0:
             return False, (verify.stderr or "SSH key verification failed")[-1200:]
 
-        from .node_bootstrap import bootstrap
         ok, result = bootstrap(
             host,
             user,
