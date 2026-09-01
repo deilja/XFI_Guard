@@ -26,6 +26,9 @@ INTERVAL = max(10, int(os.getenv("XFI_GUARD_CLUSTER_HEARTBEAT_INTERVAL", "30")))
 
 
 def _ssl_context() -> ssl.SSLContext | None:
+    ca_file = os.getenv("XFI_GUARD_CLUSTER_TLS_CA_FILE", "").strip()
+    if ca_file:
+        return ssl.create_default_context(cafile=ca_file)
     if os.getenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "").strip().lower() in {"1", "true", "yes"}:
         return ssl._create_unverified_context()
     return None
