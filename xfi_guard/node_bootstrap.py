@@ -105,7 +105,7 @@ install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
         remote += "CLUSTER_TLS_INSECURE=" + shlex.quote(local_insecure) + "\n"
         remote += r'''
 python3 - <<'PY'
-import json, os, ssl, urllib.request
+import json, os, ssl, urllib.error, urllib.request
 master=os.environ.get("CLUSTER_MASTER", "").rstrip("/")
 token=os.environ.get("CLUSTER_TOKEN", "")
 insecure=os.environ.get("CLUSTER_TLS_INSECURE", "").lower() in {"1", "true", "yes"}
@@ -115,11 +115,27 @@ req=urllib.request.Request(master + "/health", headers={"Authorization": "Bearer
 context=ssl._create_unverified_context() if insecure and master.lower().startswith("https://") else None
 try:
     with urllib.request.urlopen(req, timeout=10, context=context) as response:
-        data=json.loads(response.read().decode())
+        raw=response.read()
+        status=getattr(response, "status", 200)
 except ssl.SSLCertVerificationError as exc:
-    raise SystemExit("CLUSTER_MASTER_TLS_VERIFY_FAILED: Master uses an untrusted certificate. Configure a trusted CA or explicitly set XFI_GUARD_CLUSTER_TLS_INSECURE=1 on the controller.") from exc
-if data.get("ok") is not True:
-    raise SystemExit("Cluster Master /health is not healthy")
+    raise SystemExit("CLUSTER_MASTER_TLS_VERIFY_FAILED: Master uses an untrusted certificate. Configure a trusted CA or explicitly set XFI_GUARD_CLUSTER_TLS_INSECURE=1 on the controller.") from None
+except urllib.error.HTTPError as exc:
+    raw=exc.read(512)
+    preview=raw.decode("utf-8", "replace").strip().replace("\n", " ")
+    raise SystemExit(f"CLUSTER_MASTER_HTTP_ERROR: HTTP {exc.code}; response={preview[:300]!r}") from None
+except urllib.error.URLError as exc:
+    raise SystemExit(f"CLUSTER_MASTER_CONNECTION_FAILED: {exc.reason}") from None
+except OSError as exc:
+    raise SystemExit(f"CLUSTER_MASTER_CONNECTION_FAILED: {exc}") from None
+if not raw.strip():
+    raise SystemExit(f"CLUSTER_MASTER_INVALID_JSON: empty response (HTTP {status})")
+try:
+    data=json.loads(raw.decode("utf-8"))
+except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    preview=raw[:300].decode("utf-8", "replace").replace("\n", " ")
+    raise SystemExit(f"CLUSTER_MASTER_INVALID_JSON: {exc}; response={preview!r}") from None
+if not isinstance(data,dict) or data.get("ok") is not True:
+    raise SystemExit(f"CLUSTER_MASTER_UNHEALTHY: {data!r}")
 print("CLUSTER_MASTER_HEALTHY")
 PY
 cat > /etc/xfi-guard/cluster.env <<XFI_CLUSTER_ENV
@@ -156,15 +172,34 @@ fi
 heartbeat_ok=false
 for _ in $(seq 1 15); do
   if CLUSTER_MASTER="$CLUSTER_MASTER" CLUSTER_TOKEN="$CLUSTER_TOKEN" CLUSTER_NODE_ID="$CLUSTER_NODE_ID" CLUSTER_TLS_INSECURE="$CLUSTER_TLS_INSECURE" python3 - <<'PY'
-import json, os, ssl, urllib.request
+import json, os, ssl, urllib.error, urllib.request
 master=os.environ["CLUSTER_MASTER"].rstrip("/")
 token=os.environ["CLUSTER_TOKEN"]
 node_id=os.environ["CLUSTER_NODE_ID"]
 insecure=os.environ.get("CLUSTER_TLS_INSECURE", "").lower() in {"1", "true", "yes"}
 req=urllib.request.Request(master + "/nodes", headers={"Authorization": "Bearer " + token})
 context=ssl._create_unverified_context() if insecure and master.lower().startswith("https://") else None
-with urllib.request.urlopen(req, timeout=10, context=context) as response:
-    data=json.loads(response.read().decode())
+try:
+    with urllib.request.urlopen(req, timeout=10, context=context) as response:
+        raw=response.read()
+        status=getattr(response, "status", 200)
+except ssl.SSLCertVerificationError:
+    raise SystemExit("CLUSTER_MASTER_TLS_VERIFY_FAILED") from None
+except urllib.error.HTTPError as exc:
+    raw=exc.read(300)
+    preview=raw.decode("utf-8", "replace").strip().replace("\n", " ")
+    raise SystemExit(f"CLUSTER_MASTER_HTTP_ERROR: HTTP {exc.code}; response={preview[:200]!r}") from None
+except urllib.error.URLError as exc:
+    raise SystemExit(f"CLUSTER_MASTER_CONNECTION_FAILED: {exc.reason}") from None
+except OSError as exc:
+    raise SystemExit(f"CLUSTER_MASTER_CONNECTION_FAILED: {exc}") from None
+if not raw.strip():
+    raise SystemExit(f"CLUSTER_MASTER_INVALID_JSON: empty response (HTTP {status})")
+try:
+    data=json.loads(raw.decode("utf-8"))
+except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    preview=raw[:200].decode("utf-8", "replace").replace("\n", " ")
+    raise SystemExit(f"CLUSTER_MASTER_INVALID_JSON: {exc}; response={preview!r}") from None
 for node in data.get("nodes", []):
     if node.get("name") == node_id and node.get("online") is True:
         raise SystemExit(0)
