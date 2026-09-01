@@ -20,6 +20,7 @@ class AddVPSStates(StatesGroup):
     port = State()
     user = State()
     confirm = State()
+    password = State()
 
 
 def _cancel_kb() -> InlineKeyboardMarkup:
@@ -74,6 +75,19 @@ async def _abort_if_requested(message: Message, state: FSMContext) -> bool:
     return True
 
 
+def _safe_output(output: str, token: str, secret: str) -> str:
+    return (output or "")[-1800:].replace(token, "<TOKEN>").replace(secret, "<SECRET>")
+
+
+def _is_ssh_auth_failure(output: str) -> bool:
+    text = (output or "").lower()
+    return any(marker in text for marker in (
+        "permission denied (publickey,password)",
+        "permission denied (publickey)",
+        "authentication failed",
+    ))
+
+
 def install_cluster_add_handlers(dp) -> None:
     @dp.callback_query(F.data == "cluster:add")
     async def add_start(c: CallbackQuery, state: FSMContext):
@@ -106,7 +120,7 @@ def install_cluster_add_handlers(dp) -> None:
         await c.message.answer(
             "➕ ДОБАВЛЕНИЕ VPS\n\n"
             "Введите IP-адрес или hostname нового VPS.\n\n"
-            "SSH должен быть доступен с Cluster Master, а ключ — уже находиться в SSH agent/known_hosts.",
+            "SSH должен быть доступен с Cluster Master. Если ключ XFI Guard ещё не установлен, после проверки будет предложена авторизация по паролю.",
             reply_markup=_cancel_kb(),
         )
         await c.answer()
@@ -199,7 +213,10 @@ def install_cluster_add_handlers(dp) -> None:
         except RuntimeError as exc:
             return await c.answer(str(exc), show_alert=True)
 
-        await c.message.edit_text(f"⏳ Подключаю VPS {host}...\n\nSSH → установка → Cluster Agent → heartbeat.")
+        await c.message.edit_text(
+            f"⏳ Подключаю VPS {host}...\n\n"
+            "SSH key → установка → Cluster Agent → heartbeat."
+        )
         try:
             ok, output = await asyncio.to_thread(
                 bootstrap, host, user, port, 60, None,
@@ -208,19 +225,85 @@ def install_cluster_add_handlers(dp) -> None:
             )
         except Exception as exc:
             ok, output = False, f"{type(exc).__name__}: {exc}"
-        finally:
-            await state.clear()
 
-        safe = output[-1800:].replace(token, "<TOKEN>").replace(secret, "<SECRET>")
         if ok:
+            await state.clear()
+            safe = _safe_output(output, token, secret)
             await c.message.answer(
                 f"🟢 VPS {host} подключён.\n\n{safe}\n\n"
                 "Ожидаю heartbeat. Нажмите «🖥 VPS-узлы» → «🔄 Обновить»."
             )
-            await c.answer("VPS подключён")
-        else:
-            await c.message.answer(
-                f"🔴 Не удалось подключить VPS {host}.\n\n{safe}\n\n"
-                "Проверьте SSH-доступ, known_hosts и права ключа."
+            return await c.answer("VPS подключён")
+
+        if _is_ssh_auth_failure(output):
+            await state.set_state(AddVPSStates.password)
+            await c.message.edit_text(
+                f"🔐 SSH-ключ не принят VPS {host}.\n\n"
+                "Введите пароль SSH для первоначальной установки ключа XFI Guard.\n"
+                "Пароль используется только в памяти, не сохраняется и после установки ключа больше не нужен.",
+                reply_markup=_cancel_kb(),
             )
-            await c.answer("Ошибка подключения", show_alert=True)
+            return await c.answer("Нужен SSH пароль")
+
+        await state.clear()
+        safe = _safe_output(output, token, secret)
+        await c.message.answer(
+            f"🔴 Не удалось подключить VPS {host}.\n\n{safe}\n\n"
+            "Проверьте SSH-доступ, known_hosts и права ключа."
+        )
+        await c.answer("Ошибка подключения", show_alert=True)
+
+    @dp.message(AddVPSStates.password)
+    async def add_password(message: Message, state: FSMContext):
+        if not authorized(message) or await _abort_if_requested(message, state):
+            return
+        password = message.text or ""
+        if not password:
+            return await message.answer("❌ Пароль пустой. Повторите ввод.", reply_markup=_cancel_kb())
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        data = await state.get_data()
+        host = data.get("host", "")
+        port = int(data.get("port", 22))
+        user = data.get("user", "root")
+        master = data.get("master_url", "")
+        token = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "").strip()
+        secret = os.getenv("XFI_GUARD_CLUSTER_SECRET", "").strip()
+        if not (host and master and token and secret):
+            await state.clear()
+            return await message.answer("❌ Конфигурация кластера неполная.")
+
+        status = await message.answer(
+            f"⏳ Подключаю VPS {host} по SSH-паролю...\n\n"
+            "Установка ключа → проверка key-only SSH → Cluster Agent → heartbeat."
+        )
+        try:
+            from .password_bootstrap import bootstrap_with_password
+            ok, output = await asyncio.to_thread(
+                bootstrap_with_password,
+                host, user, port, password, 60,
+                node_id=host,
+                cluster_master=master,
+                cluster_secret=secret,
+                cluster_token=token,
+            )
+        except Exception as exc:
+            ok, output = False, f"{type(exc).__name__}: {exc}"
+        finally:
+            password = ""
+            await state.clear()
+
+        safe = _safe_output(output, token, secret)
+        if ok:
+            await status.edit_text(
+                f"🟢 VPS {host} подключён.\n\n{safe}\n\n"
+                "Ожидаю heartbeat. Нажмите «🖥 VPS-узлы» → «🔄 Обновить»."
+            )
+            return
+        await status.edit_text(
+            f"🔴 Не удалось подключить VPS {host}.\n\n{safe}\n\n"
+            "Проверьте SSH-пароль, SSH-настройки и доступность VPS."
+        )
