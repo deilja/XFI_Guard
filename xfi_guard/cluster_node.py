@@ -15,17 +15,17 @@ from pathlib import Path
 
 from .cluster import _valid_ip
 from .cluster_auth import new_node_id, sign_heartbeat
+from .master_url import normalize_master_url
 
 NODE_NAME = os.getenv("XFI_GUARD_CLUSTER_NODE_NAME", socket.gethostname())[:128]
 NODE_ID_FILE = Path(os.getenv("XFI_GUARD_CLUSTER_NODE_ID_FILE", "/var/lib/xfi-guard/node-id"))
-MASTER_URL = os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", "http://127.0.0.1:8765").rstrip("/")
+MASTER_URL = normalize_master_url(os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", "http://127.0.0.1:8765"))
 TOKEN = os.getenv("XFI_GUARD_CLUSTER_TOKEN", "")
 SECRET = os.getenv("XFI_GUARD_CLUSTER_SECRET", "")
 INTERVAL = max(10, int(os.getenv("XFI_GUARD_CLUSTER_HEARTBEAT_INTERVAL", "30")))
 
 
 def _ssl_context() -> ssl.SSLContext | None:
-    """Honor the explicit self-signed-master compatibility switch."""
     if os.getenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "").strip().lower() in {"1", "true", "yes"}:
         return ssl._create_unverified_context()
     return None
@@ -67,9 +67,21 @@ def _request(path: str, payload: dict) -> dict:
     req = urllib.request.Request(MASTER_URL + path, data=body, method="POST", headers={"Content-Type": "application/json"})
     if TOKEN:
         req.add_header("Authorization", f"Bearer {TOKEN}")
-    context = _ssl_context() if MASTER_URL.lower().startswith("https://") else None
+    context = _ssl_context() if MASTER_URL.startswith("https://") else None
     with urllib.request.urlopen(req, timeout=10, context=context) as response:
         return json.loads(response.read().decode())
+
+
+def master_health(timeout: int = 10) -> dict:
+    req = urllib.request.Request(MASTER_URL + "/health", method="GET")
+    if TOKEN:
+        req.add_header("Authorization", f"Bearer {TOKEN}")
+    context = _ssl_context() if MASTER_URL.startswith("https://") else None
+    with urllib.request.urlopen(req, timeout=timeout, context=context) as response:
+        result = json.loads(response.read().decode())
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError("Master /health returned unhealthy response")
+    return result
 
 
 def _local_blocked() -> list[str]:
@@ -126,8 +138,9 @@ def heartbeat() -> dict:
             applied.append({"ip": ip, "ok": ok})
             if ok:
                 blocked.add(ip)
-    _save_state(last_ok=time.time(), commands=result.get("commands", []), applied=applied, blocked=sorted(blocked))
+    _save_state(last_ok=time.time(), commands=result.get("commands", []), applied=applied, blocked=sorted(blocked), master_url=MASTER_URL)
     result["applied"] = applied
+    result["master_url"] = MASTER_URL
     return result
 
 
@@ -147,7 +160,7 @@ def run() -> None:
             heartbeat()
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
             try:
-                _save_state(last_error=f"{type(exc).__name__}: {exc}", last_attempt=time.time())
+                _save_state(last_error=f"{type(exc).__name__}: {exc}", last_attempt=time.time(), master_url=MASTER_URL)
             except OSError:
                 pass
         time.sleep(INTERVAL)
