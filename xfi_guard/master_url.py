@@ -56,9 +56,10 @@ def assert_master_not_this_vps(master_url: str, local_hostnames: set[str] | None
         parsed = ipaddress.ip_address(host)
     except ValueError:
         parsed = None
-    local_ips = {addr for addr in _resolved_addresses(socket.gethostname()) | _resolved_addresses(socket.getfqdn())}
+    local_ips = _resolved_addresses(socket.gethostname()) | _resolved_addresses(socket.getfqdn())
     if parsed and str(parsed) in local_ips:
         raise ValueError(f"MASTER_URL points to this VPS IP: {host}")
-    if host in _resolved_addresses(host) & local_ips:
+    resolved_master_ips = _resolved_addresses(host)
+    if resolved_master_ips & local_ips:
         raise ValueError(f"MASTER_URL resolves to this VPS: {host}")
     return normalized
