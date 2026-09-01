@@ -8,15 +8,15 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardButton,InlineKeyboardMarkup
 from .admin_auth import authorized
 from .cluster_status import cluster_summary
+from .master_url import normalize_master_url
 from .nodes import load_nodes,probe_node,restart_guard
 STATE_PATH=Path(os.getenv("XFI_GUARD_CLUSTER_STATE",str(Path.home()/".cache/xfi-guard/cluster-state.json")))
 DEFAULT_MASTER_URL="http://127.0.0.1:8765"
-def _master_url(): return os.getenv("XFI_GUARD_CLUSTER_MASTER_URL",DEFAULT_MASTER_URL).strip().rstrip("/") or DEFAULT_MASTER_URL
+def _master_url(): return normalize_master_url(os.getenv("XFI_GUARD_CLUSTER_MASTER_URL",DEFAULT_MASTER_URL))
 def _validate_master_url(url:str)->str:
-    p=urlsplit(url)
-    if p.scheme not in {"http","https"} or not p.hostname or p.username or p.password: raise RuntimeError("XFI_GUARD_CLUSTER_MASTER_URL имеет некорректный формат")
+    normalized=normalize_master_url(url);p=urlsplit(normalized)
     if p.scheme=="http" and p.hostname not in {"127.0.0.1","localhost","::1"}: raise RuntimeError("Для удалённого Cluster Master требуется HTTPS")
-    return url
+    return normalized
 def _timeout():
     try:return max(1.,min(15.,float(os.getenv("XFI_GUARD_CLUSTER_TIMEOUT","5"))))
     except ValueError:return 5.
@@ -68,8 +68,18 @@ def _format_nodes(data):
     for n in nodes:
         s=n.get("status","offline");icon={"online":"🟢","degraded":"🟡","offline":"🔴"}.get(s,"⚪");name=n.get("name") or n.get("hostname") or "-";lines += [f"{icon} {name} — {s.upper()}",f"   heartbeat: {n.get('status_reason','-')} | 🔒 {len(n.get('blocked',[]))}"]
     c=summary["counts"];return "\n".join(lines+["",f"Итого: 🟢 {c['online']}  🟡 {c['degraded']}  🔴 {c['offline']}"])
-def _local_node_data(): return [probe_node(n) for n in load_nodes()]
-def _detail(x): return "\n".join([f"🖥 VPS: {x.get('name','—')}","",f"Host: {x.get('host','—')}",f"Status: {str(x.get('status','offline')).upper()}",f"Hostname: {x.get('hostname','—')}",f"XFI Guard: {x.get('xfi_guard','—')}",f"Fail2Ban: {x.get('fail2ban','—')}",f"UFW: {x.get('ufw','—')}",f"Load: {x.get('load','—')}",f"RAM: {x.get('memory','—')}",f"Disk /: {x.get('disk','—')}",f"Uptime: {x.get('uptime','—')}",f"Проверено: {x.get('checked_at','—')}",f"Ошибка: {x.get('error','нет')}"])
+def _local_node_data():
+    """SSH diagnostics are supplementary; heartbeat status always comes from Master."""
+    master={x.get("name"):x for x in _request("/nodes").get("nodes",[])}
+    out=[]
+    for node in load_nodes():
+        diag=probe_node(node)
+        hb=master.get(node.name,{})
+        status,reason=__import__('xfi_guard.cluster_status',fromlist=['node_status']).node_status(hb)
+        diag.update({"status":status,"heartbeat_status":status,"heartbeat_reason":reason,"last_seen":hb.get("last_seen",0),"master_registered":bool(hb)})
+        out.append(diag)
+    return out
+def _detail(x): return "\n".join([f"🖥 VPS: {x.get('name','—')}","",f"Host: {x.get('host','—')}",f"Status: {str(x.get('heartbeat_status',x.get('status','offline'))).upper()}",f"Heartbeat: {x.get('heartbeat_reason','heartbeat timeout')}",f"Master registration: {'yes' if x.get('master_registered') else 'no'}",f"Hostname: {x.get('hostname','—')}",f"XFI Guard: {x.get('xfi_guard','—')}",f"Fail2Ban: {x.get('fail2ban','—')}",f"UFW: {x.get('ufw','—')}",f"Load: {x.get('load','—')}",f"RAM: {x.get('memory','—')}",f"Disk /: {x.get('disk','—')}",f"Uptime: {x.get('uptime','—')}",f"Проверено: {x.get('checked_at','—')}",f"Ошибка: {x.get('error','нет')}"])
 def _node_buttons(name,confirm=False):
     ref=_node_ref(name)
     if confirm:return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Да, перезапустить",callback_data=f"cluster:restart:{ref}")],[InlineKeyboardButton(text="❌ Отмена",callback_data=f"cluster:detail:{ref}")]])
@@ -87,8 +97,7 @@ def blocks_view():
     return "\n".join(lines+[f"… ещё {len(blocks)-40}"] if len(blocks)>40 else lines)[:3900]
 def _cluster_error_view(exc:Exception)->str:
     message=str(exc)
-    if "XFI_GUARD_CLUSTER_TOKEN не задан" in message:
-        return "🌐 XFI GUARD • CLUSTER CENTER\n\n🔴 Cluster Master не настроен.\n\nXFI_GUARD_CLUSTER_TOKEN не задан.\n\nДобавьте токен в окружение xfi-guard-bot.service и перезапустите бота."
+    if "XFI_GUARD_CLUSTER_TOKEN не задан" in message:return "🌐 XFI GUARD • CLUSTER CENTER\n\n🔴 Cluster Master не настроен.\n\nXFI_GUARD_CLUSTER_TOKEN не задан.\n\nДобавьте токен в окружение xfi-guard-bot.service и перезапустите бота."
     return "🖥 VPS-УЗЛЫ\n\n🔴 Не удалось получить список VPS.\n\n"+message[:700]
 async def _safe_edit(message,text,reply_markup):
     try: await message.edit_text(text,reply_markup=reply_markup)
@@ -106,23 +115,21 @@ def install_cluster_handlers(dp,main_kb):
     @dp.callback_query(F.data=="cluster:nodes")
     async def nodes(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
-        local=await asyncio.to_thread(_local_node_data)
-        if local:
-            text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local)
-        else:
-            try:
-                data=await asyncio.to_thread(_request,"/nodes")
-                text="🖥 VPS-УЗЛЫ\n\n"+_format_nodes(data)
-            except Exception as exc:
-                text=_cluster_error_view(exc)
-        await _safe_edit(c.message,text[:3900],_buttons())
-        await c.answer("VPS-узлы" if not text.startswith("🖥 VPS-УЗЛЫ\n\n🔴") and not text.startswith("🌐 XFI GUARD • CLUSTER CENTER\n\n🔴") else "Cluster Master недоступен",show_alert=text.startswith("🖥 VPS-УЗЛЫ\n\n🔴") or text.startswith("🌐 XFI GUARD • CLUSTER CENTER\n\n🔴"))
+        try:
+            local=await asyncio.to_thread(_local_node_data)
+            text="🖥 VPS-УЗЛЫ\n\n"+"\n\n".join(_detail(x) for x in local) if local else "🖥 VPS-УЗЛЫ\n\n• узлы ещё не зарегистрированы"
+            await _safe_edit(c.message,text[:3900],_buttons());await c.answer("VPS-узлы")
+        except Exception as exc:
+            text=_cluster_error_view(exc);await _safe_edit(c.message,text,_buttons());await c.answer("Cluster Master недоступен",show_alert=True)
     @dp.callback_query(F.data.startswith("cluster:detail:"))
     async def detail(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
         if not node:return await c.answer("VPS не найден",show_alert=True)
-        x=await asyncio.to_thread(probe_node,node);await _safe_edit(c.message,_detail(x),_node_buttons(node.name));await c.answer("Обновлено")
+        try:
+            x=await asyncio.to_thread(_local_node_data);x=next(v for v in x if v.get("name")==node.name)
+        except Exception as exc:return await c.answer(f"Heartbeat/Master недоступен: {exc}",show_alert=True)
+        await _safe_edit(c.message,_detail(x),_node_buttons(node.name));await c.answer("Обновлено")
     @dp.callback_query(F.data.startswith("cluster:confirm_restart:"))
     async def confirm_restart(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
@@ -134,7 +141,7 @@ def install_cluster_handlers(dp,main_kb):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
         ref=c.data.split(":",2)[2];node=_resolve_node_ref(ref)
         if not node:return await c.answer("VPS не найден",show_alert=True)
-        ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(probe_node,node);await _safe_edit(c.message,("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),_node_buttons(node.name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
+        ok,msg=await asyncio.to_thread(restart_guard,node);x=await asyncio.to_thread(_local_node_data);x=next(v for v in x if v.get("name")==node.name);await _safe_edit(c.message,("🟢 " if ok else "🔴 ")+msg+"\n\n"+_detail(x),_node_buttons(node.name));await c.answer("Готово" if ok else "Ошибка",show_alert=not ok)
     @dp.callback_query(F.data=="cluster:blocks")
     async def blocks(c):
         if not authorized(c):return await c.answer("Нет доступа",show_alert=True)
