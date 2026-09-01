@@ -40,8 +40,6 @@ for required in XFI_GUARD_CLUSTER_NODE_NAME XFI_GUARD_CLUSTER_MASTER_URL XFI_GUA
   fi
 done
 
-# Normalize the Master address and reject accidental self-registration before
-# installing/starting the Agent. The normalized value is persisted as-is.
 NORMALIZED_MASTER="$($APP_DIR/.venv/bin/python - "$XFI_GUARD_CLUSTER_MASTER_URL" <<'PY'
 import sys
 from xfi_guard.master_url import assert_master_not_this_vps
@@ -55,7 +53,6 @@ sed "s#^XFI_GUARD_CLUSTER_MASTER_URL=.*#XFI_GUARD_CLUSTER_MASTER_URL=$NORMALIZED
 install -m 0600 "$python_env_tmp" "$ENV_FILE"
 source "$ENV_FILE"
 
-# Master must be reachable and healthy before the Agent can be registered.
 if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required for Master health verification" >&2
   exit 1
@@ -83,15 +80,29 @@ chmod 0600 "$ENV_FILE"
 sed "s#^WorkingDirectory=.*#WorkingDirectory=$APP_DIR#; s#^ExecStart=.*#ExecStart=$APP_DIR/.venv/bin/python -m xfi_guard.cluster_node#" "$UNIT_SRC" > "$UNIT"
 chmod 0644 "$UNIT"
 systemctl daemon-reload
+HEARTBEAT_CHECK_START="$(date +%s)"
 systemctl enable --now xfi-guard-cluster-node.service
+systemctl restart xfi-guard-cluster-node.service
+
+# A node is not considered connected until a NEW authenticated heartbeat has
+# been accepted by the Master. Never use an old last_ok as proof of connection.
+for _ in {1..15}; do
+  if "$APP_DIR/.venv/bin/python" - "$HEARTBEAT_CHECK_START" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    last_ok=float(json.loads(Path("/var/lib/xfi-guard/node-state.json").read_text()).get("last_ok", 0))
+except (OSError, ValueError, TypeError):
+    last_ok=0
+raise SystemExit(0 if last_ok > float(sys.argv[1]) else 1)
+PY
+  then
+    echo "Cluster Node installed; Master: $XFI_GUARD_CLUSTER_MASTER_URL; authenticated heartbeat confirmed."
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "Agent started, but authenticated heartbeat did not succeed. VPS is NOT marked connected." >&2
 systemctl --no-pager --full status xfi-guard-cluster-node.service || true
-
-# A node is not considered connected until its first authenticated heartbeat
-# is accepted by the Master. Verify it explicitly instead of claiming success.
-sleep 2
-if ! grep -q '"last_ok"' /var/lib/xfi-guard/node-state.json 2>/dev/null; then
-  echo "Agent started, but first heartbeat has not succeeded yet. VPS is NOT marked connected." >&2
-  exit 1
-fi
-
-echo "Cluster Node installed; Master: $XFI_GUARD_CLUSTER_MASTER_URL; authenticated heartbeat confirmed."
+exit 1
