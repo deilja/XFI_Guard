@@ -9,8 +9,8 @@ from pathlib import Path
 DEFAULT_IDENTITY_FILE = Path(os.path.expanduser("~/.ssh/xfi_guard_cluster_ed25519"))
 
 
-def _local_cluster_settings() -> tuple[str, str, str]:
-    """Read cluster credentials only on the XFI Guard controller during provisioning."""
+def _local_cluster_settings() -> tuple[str, str, str, str]:
+    """Read cluster credentials and explicit TLS mode only on the controller."""
     try:
         import tomllib
         path = Path(os.getenv("XFI_GUARD_CONFIG", "/opt/xfi-guard/config.toml"))
@@ -21,7 +21,8 @@ def _local_cluster_settings() -> tuple[str, str, str]:
     master = str(cluster.get("master_url", "") or os.getenv("XFI_GUARD_CLUSTER_MASTER_URL", "")).strip()
     secret = str(cluster.get("secret", "") or os.getenv("XFI_GUARD_CLUSTER_SECRET", "")).strip()
     token = str(cluster.get("token", "") or os.getenv("XFI_GUARD_CLUSTER_TOKEN", "")).strip()
-    return master, secret, token
+    insecure = str(cluster.get("tls_insecure", "") or os.getenv("XFI_GUARD_CLUSTER_TLS_INSECURE", "")).strip().lower()
+    return master, secret, token, insecure
 
 
 def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60,
@@ -35,7 +36,7 @@ def bootstrap(host: str, user: str = "root", port: int = 22, timeout: int = 60,
         return False, "invalid port"
     target = f"{user}@{host}"
 
-    local_master, local_secret, local_token = _local_cluster_settings()
+    local_master, local_secret, local_token, local_insecure = _local_cluster_settings()
     cluster_master = cluster_master or local_master
     cluster_secret = cluster_secret or local_secret
     cluster_token = cluster_token or local_token
@@ -96,32 +97,37 @@ fi
 install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
 '''
     if cluster_enabled:
-        # Credentials are written only on the target VPS with mode 0600.
         remote += "\n# XFI Guard cluster enrollment\n"
         remote += "CLUSTER_MASTER=" + shlex.quote(cluster_master) + "\n"
         remote += "CLUSTER_SECRET=" + shlex.quote(cluster_secret) + "\n"
         remote += "CLUSTER_TOKEN=" + shlex.quote(cluster_token) + "\n"
         remote += "CLUSTER_NODE_ID=" + shlex.quote(node_id) + "\n"
-        # Fail before installing/enabling the Agent if the supplied Master is not healthy.
+        remote += "CLUSTER_TLS_INSECURE=" + shlex.quote(local_insecure) + "\n"
         remote += r'''
 python3 - <<'PY'
-import json, os, urllib.request
+import json, os, ssl, urllib.request
 master=os.environ.get("CLUSTER_MASTER", "").rstrip("/")
 token=os.environ.get("CLUSTER_TOKEN", "")
+insecure=os.environ.get("CLUSTER_TLS_INSECURE", "").lower() in {"1", "true", "yes"}
 if not master or not token:
     raise SystemExit("CLUSTER_MASTER and CLUSTER_TOKEN are required")
 req=urllib.request.Request(master + "/health", headers={"Authorization": "Bearer " + token})
-with urllib.request.urlopen(req, timeout=10) as response:
-    data=json.loads(response.read().decode())
+context=ssl._create_unverified_context() if insecure and master.lower().startswith("https://") else None
+try:
+    with urllib.request.urlopen(req, timeout=10, context=context) as response:
+        data=json.loads(response.read().decode())
+except ssl.SSLCertVerificationError as exc:
+    raise SystemExit("CLUSTER_MASTER_TLS_VERIFY_FAILED: Master uses an untrusted certificate. Configure a trusted CA or explicitly set XFI_GUARD_CLUSTER_TLS_INSECURE=1 on the controller.") from exc
 if data.get("ok") is not True:
     raise SystemExit("Cluster Master /health is not healthy")
 print("CLUSTER_MASTER_HEALTHY")
 PY
-cat > /etc/xfi-guard/cluster.env <<'XFI_CLUSTER_ENV'
+cat > /etc/xfi-guard/cluster.env <<XFI_CLUSTER_ENV
 XFI_GUARD_CLUSTER_MASTER_URL=$CLUSTER_MASTER
 XFI_GUARD_CLUSTER_SECRET=$CLUSTER_SECRET
 XFI_GUARD_CLUSTER_TOKEN=$CLUSTER_TOKEN
 XFI_GUARD_CLUSTER_NODE_ID=$CLUSTER_NODE_ID
+XFI_GUARD_CLUSTER_TLS_INSECURE=$CLUSTER_TLS_INSECURE
 XFI_CLUSTER_ENV
 chmod 0600 /etc/xfi-guard/cluster.env
 install -m 0644 systemd/xfi-guard-cluster-agent.service /etc/systemd/system/xfi-guard-cluster-agent.service
@@ -147,17 +153,17 @@ if [ "$cluster_state" != "active" ]; then
 fi
 
 # Registration success is defined by a NEW heartbeat visible on the Master.
-# Do not trust systemd active state alone and do not emit a green success marker
-# until /nodes contains this exact node_id with a fresh last_seen.
 heartbeat_ok=false
 for _ in $(seq 1 15); do
-  if CLUSTER_MASTER="$CLUSTER_MASTER" CLUSTER_TOKEN="$CLUSTER_TOKEN" CLUSTER_NODE_ID="$CLUSTER_NODE_ID" python3 - <<'PY'
-import json, os, urllib.request
+  if CLUSTER_MASTER="$CLUSTER_MASTER" CLUSTER_TOKEN="$CLUSTER_TOKEN" CLUSTER_NODE_ID="$CLUSTER_NODE_ID" CLUSTER_TLS_INSECURE="$CLUSTER_TLS_INSECURE" python3 - <<'PY'
+import json, os, ssl, urllib.request
 master=os.environ["CLUSTER_MASTER"].rstrip("/")
 token=os.environ["CLUSTER_TOKEN"]
 node_id=os.environ["CLUSTER_NODE_ID"]
+insecure=os.environ.get("CLUSTER_TLS_INSECURE", "").lower() in {"1", "true", "yes"}
 req=urllib.request.Request(master + "/nodes", headers={"Authorization": "Bearer " + token})
-with urllib.request.urlopen(req, timeout=10) as response:
+context=ssl._create_unverified_context() if insecure and master.lower().startswith("https://") else None
+with urllib.request.urlopen(req, timeout=10, context=context) as response:
     data=json.loads(response.read().decode())
 for node in data.get("nodes", []):
     if node.get("name") == node_id and node.get("online") is True:
@@ -194,13 +200,13 @@ if [ "$ufw_state" = inactive ]; then
   printf 'UFW_NOTE=installed_but_left_disabled_to_preserve_unknown_VPN_panel_ports\n'
 fi
 '''
-    # Quote the cluster variables into the remote shell before execution.
     if cluster_enabled:
         prefix = (
             "export CLUSTER_MASTER=" + shlex.quote(cluster_master) + "\n"
             "export CLUSTER_SECRET=" + shlex.quote(cluster_secret) + "\n"
             "export CLUSTER_TOKEN=" + shlex.quote(cluster_token) + "\n"
             "export CLUSTER_NODE_ID=" + shlex.quote(node_id) + "\n"
+            "export CLUSTER_TLS_INSECURE=" + shlex.quote(local_insecure) + "\n"
         )
         remote = prefix + remote
     cmd = ["ssh"]
