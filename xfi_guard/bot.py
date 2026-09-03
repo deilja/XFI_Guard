@@ -20,18 +20,16 @@ from .firewall import list_blocked_ips
 from .rate_limit import RateLimitMiddleware
 from .security import collect_security_checks
 from .vpn import collect_vpn_checks
-from .nodes_ui import install_node_handlers
-from .cluster_ui import install_cluster_handlers
 from .vps_ui import install_vps_handlers
 from .subnet_ui import install_subnet_handlers
 
 def admin(message): return authorized(message)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS","🌐 Кластер"],["🚫 Блокировки","📋 События","⚙️ 3X-UI"],["🔄 Проверка","🔄 Обновить бота","❓ Помощь"]])
+def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS"],["🚫 Блокировки","📋 События","⚙️ 3X-UI"],["🔄 Проверка","🔄 Обновить бота","❓ Помощь"]])
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def blocked_view():
     try:
-        ips=list_blocked_ips(); lines=["🛡 АКТИВНЫЕ БЛОКИРОВКИ","",f"Всего: {len(ips)}","Срок автоматической блокировки: 7 дней","Backend: Fail2Ban + UFW","", "IP:"]; lines.extend(f"• {ip}" for ip in ips[:100]);
+        ips=list_blocked_ips(); lines=["🛡 АКТИВНЫЕ БЛОКИРОВКИ","",f"Всего: {len(ips)}","Срок автоматической блокировки: 7 дней","Backend: Fail2Ban + UFW","", "IP:"]; lines.extend(f"• {ip}" for ip in ips[:100])
         if len(ips)>100: lines.append(f"… ещё {len(ips)-100} IP")
         if not ips: lines.append("• нет активных публичных IP-блокировок")
         return "\n".join(lines)[:3900]
@@ -41,11 +39,11 @@ def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
     register_alert_callbacks(dp)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
-    install_xui_handlers(dp); install_defense_handlers(dp); install_node_handlers(dp); install_cluster_handlers(dp,main_kb); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
+    install_xui_handlers(dp); install_defense_handlers(dp); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
-        if admin(message): await message.answer("🛡 XFI Guard\n\nПанель управления сервером активна.",reply_markup=main_kb())
+        if admin(message): await message.answer("🛡 XFI Guard\n\nПанель управления сервером активна.\n\nРежим: один VPS — управление только этим сервером.",reply_markup=main_kb())
     @dp.message(Command("status"))
     async def status_command(message):
         if admin(message): await message.answer("📊 Статус XFI Guard\n\n"+results(collect_basic_checks()+collect_security_checks()+collect_vpn_checks()),reply_markup=main_kb())
@@ -54,7 +52,7 @@ def build_dispatcher():
         if admin(message): await message.answer(blocked_view(),reply_markup=main_kb())
     @dp.message(Command("vps"))
     async def vps_command(message):
-        if admin(message): await message.answer("🖥 VPS\n\nЦентр диагностики и управления VPS.",reply_markup=__import__('xfi_guard.vps_ui',fromlist=['vps_menu']).vps_menu())
+        if admin(message): await message.answer("🖥 VPS\n\nЦентр диагностики и управления текущим VPS.",reply_markup=__import__('xfi_guard.vps_ui',fromlist=['vps_menu']).vps_menu())
     @dp.message(F.text=="📊 Статус")
     async def status_button(message): await status_command(message)
     @dp.message(F.text=="🛡 Защита")
@@ -67,7 +65,7 @@ def build_dispatcher():
         if admin(message): await message.answer("🌐 VPN/Xray\n\n"+results(collect_vpn_checks()),reply_markup=main_kb())
     @dp.message(F.text=="🚫 Блокировки")
     async def blocks_button(message):
-        if admin(message): await message.answer(blocked_view()+"\n\nВыберите управление подсетями или IP в разделе «🛡 Защита».",reply_markup=main_kb())
+        if admin(message): await message.answer(blocked_view()+"\n\nУправление блокировками доступно в разделе «🛡 Защита».",reply_markup=main_kb())
     @dp.message(F.text=="📋 События")
     async def events_button(message):
         if not admin(message): return
@@ -82,10 +80,11 @@ def build_dispatcher():
     @dp.message(F.text=="🔄 Обновить бота")
     async def update_button(message):
         if admin(message):
-            await message.answer("⏳ Запускаю безопасное обновление XFI Guard..."); subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            await message.answer("⏳ Запускаю безопасное обновление XFI Guard. После проверки бот автоматически продолжит работу.")
+            subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     @dp.message(F.text=="❓ Помощь")
     async def help_button(message):
-        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — меню VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты",reply_markup=main_kb())
+        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — управление текущим VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты\n\nРежим: только установленный VPS. Подключение других VPS отключено.",reply_markup=main_kb())
     @dp.message(F.text=="⬅️ Главное меню")
     async def back_main(message,state:FSMContext):
         if admin(message): await state.clear(); await message.answer("🏠 Главное меню",reply_markup=main_kb())
