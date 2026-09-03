@@ -13,7 +13,6 @@ from .alerts import AlertManager
 from .auto_blocker import AutoBlocker
 from .auto_defense import reconcile_expired
 from .checks import check_disk, check_memory
-from .cluster_sync import sync_ban
 from .config import MonitorConfig
 from .events import deduplicate, parse_file
 from .fail2ban import all_banned
@@ -60,14 +59,7 @@ def _notify_auto_blocks(results):
     if blocked:
         lines = ["🚨 XFI Guard — АВТОМАТИЧЕСКАЯ AI-БЛОКИРОВКА", "", f"Заблокировано IP: {len(blocked)}", "Срок: 7 дней", "Backend: Fail2Ban + UFW", "", "IP:"]
         for item in blocked[:30]:
-            cluster = item.get("cluster_sync") or []
-            ok = sum(1 for x in cluster if x.get("status") == "blocked")
-            total = len(cluster)
-            suffix = f" — VPS: {ok}/{total}" if total else " — VPS: локальный"
-            lines.append(f"• {item['ip']} — {item['attempts']} попыток — {str(item['risk']).upper()} — AI {item['confidence']:.0%} — {item.get('analysis_mode', 'unknown')}{suffix}")
-            for x in cluster:
-                if x.get("status") != "blocked":
-                    lines.append(f"  └ {x.get('node', x.get('host', '?'))}: ❌ {x.get('error', 'ошибка')}")
+            lines.append(f"• {item['ip']} — {item['attempts']} попыток — {str(item['risk']).upper()} — AI {item['confidence']:.0%} — {item.get('analysis_mode', 'unknown')} — VPS: локальный")
         if len(blocked) > 30:
             lines.append(f"… ещё {len(blocked) - 30} IP")
         notify("\n".join(lines)[:3900])
@@ -147,14 +139,6 @@ def run_forever(config: MonitorConfig) -> None:
                 for item in defense_results:
                     if item.get("action") == "blocked":
                         LOG.warning("XFI-GUARD THREAT %s", item["ip"])
-                        try:
-                            item["cluster_sync"] = sync_ban(item["ip"])
-                            ok = sum(1 for x in item["cluster_sync"] if x.get("status") == "blocked")
-                            total = len(item["cluster_sync"])
-                            LOG.info("XFI-GUARD cluster sync: ip=%s success=%s/%s", item["ip"], ok, total)
-                        except Exception as exc:
-                            item["cluster_sync"] = [{"status": "failed", "error": f"{type(exc).__name__}: {exc}"}]
-                            LOG.exception("XFI-GUARD cluster sync failed for %s", item["ip"])
                 write_snapshot(config.output_file, snapshot, events + [{"event_type": "auto_defense", **item} for item in defense_results])
                 _notify_auto_blocks(defense_results)
             else:
