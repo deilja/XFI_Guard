@@ -97,7 +97,7 @@ EOF
       if [[ ! -f "/etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem" ]]; then certbot certonly --webroot -w /var/www/html -d "$WEBHOOK_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || die "Не удалось получить SSL для $WEBHOOK_DOMAIN."; fi
       cat >/etc/nginx/sites-available/xfi-guard-webhook.conf <<EOF
 server { listen 80; listen [::]:80; server_name $WEBHOOK_DOMAIN; location /.well-known/acme-challenge/ { root /var/www/html; } location / { return 301 https://\$host\$request_uri; } }
-server { listen 443 ssl http2; listen [::]:443 ssl http2; server_name $WEBHOOK_DOMAIN; ssl_certificate /etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem; ssl_certificate_key /etc/letsencrypt/live/$WEBHOOK_DOMAIN/privkey.pem; location = /xfi-guard/webhook { proxy_pass http://127.0.0.1:8080; proxy_http_version 1.1; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto https; } location / { return 404; } }
+server { listen 443 ssl http2; listen [::]:443 ssl http2; server_name $WEBHOOK_DOMAIN; ssl_certificate /etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem; ssl_certificate_key /etc/letsencrypt/live/$WEB_DOMAIN/privkey.pem; location = /xfi-guard/webhook { proxy_pass http://127.0.0.1:8080; proxy_http_version 1.1; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto https; } location / { return 404; } }
 EOF
       nginx -t && systemctl reload nginx
     else
@@ -112,6 +112,14 @@ EOF
     log "Telegram Bot пропущен; его можно настроить позже."
   fi
 fi
+
+# Single-VPS mode: no cluster/multi-VPS services, node enrollment or remote SSH management.
+rm -f /etc/systemd/system/xfi-guard-multi-vps-master.service \
+      /etc/systemd/system/xfi-guard-cluster-node.service \
+      /etc/systemd/system/xfi-guard-multi-vps.service
+systemctl daemon-reload || true
+systemctl disable --now xfi-guard-multi-vps-master.service 2>/dev/null || true
+systemctl disable --now xfi-guard-cluster-node.service 2>/dev/null || true
 
 if [[ -f systemd/xfi-guard-bot.service ]]; then
   install -m 0644 systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
@@ -136,6 +144,6 @@ if [[ -n "$BOT_TOKEN" ]]; then
   sleep 2
   systemctl is-active --quiet xfi-guard-bot || { journalctl -u xfi-guard-bot -n 80 --no-pager || true; die "Telegram bot не запустился"; }
 fi
-log "Установка/обновление завершено; Fail2Ban xfi-guard активен, bantime=7d."
+log "Установка/обновление завершено; Fail2Ban xfi-guard активен, bantime=7d; режим: один VPS."
 printf '\nMonitor: systemctl status xfi-guard --no-pager\nLogs:    journalctl -u xfi-guard -f\nJSONL:   /var/log/xfi-guard/monitor.jsonl\nFail2Ban: fail2ban-client status xfi-guard\n'
 [[ -z "$BOT_TOKEN" ]] || printf 'Bot:     systemctl status xfi-guard-bot --no-pager\nAI:      настройка Gemini ↔ Groq через Telegram → 🤖 AI\n'
