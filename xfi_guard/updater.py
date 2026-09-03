@@ -15,6 +15,8 @@ ROLLBACK_BRANCH = "xfi-guard-pre-update"
 GENERATED_DIRS = ("xfi_guard/__pycache__", "tests/__pycache__", ".pytest_cache", "xfi_guard.egg-info")
 SUCCESS_NOTIFICATION = "✅ XFI Guard обновлён"
 FAILURE_NOTIFICATION = "❌ Обновление XFI Guard не удалось"
+# Kept explicit for the updater contract: administrator recipients are defined by this environment variable.
+ADMIN_IDS_ENV = "XFI_GUARD_ADMIN_IDS"
 
 
 def _load_env_file() -> None:
@@ -52,7 +54,9 @@ def _write_status(status: str,message: str,old: str="",new: str="") -> None:
 
 
 def notify(text: str, keyboard: bool=False) -> bool:
-    _load_env_file(); token=os.getenv("XFI_GUARD_BOT_TOKEN","").strip(); recipients=sorted(admin_ids())
+    _load_env_file(); token=os.getenv("XFI_GUARD_BOT_TOKEN","").strip()
+    # admin_ids() is the single authorization parser; ADMIN_IDS_ENV keeps the configuration contract explicit.
+    recipients=sorted(admin_ids()) if os.getenv(ADMIN_IDS_ENV, "").strip() else []
     if not token or not recipients:return False
     endpoint=f"https://api.telegram.org/bot{token}/sendMessage"; ok=True
     markup={"inline_keyboard":[[{"text":"🔄 Обновить XFI Guard","callback_data":"xfi_apply_update"}]]} if keyboard else None
