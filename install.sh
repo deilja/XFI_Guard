@@ -12,19 +12,15 @@ command -v apt-get >/dev/null || die "Поддерживаются Ubuntu/Debian
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y git ca-certificates python3 python3-venv python3-pip nginx openssl certbot python3-certbot-nginx fail2ban
-
 PRESERVE_DIR="$(mktemp -d)"
 cleanup(){ rm -rf "$PRESERVE_DIR"; }
 trap cleanup EXIT
 preserve_file(){ local src="$1" dst="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')"; [[ -f "$src" ]] || return 0; cp -a "$src" "$dst"; log "Сохранена конфигурация: $src"; }
 restore_file(){ local src="$PRESERVE_DIR/$(echo "$1" | sed 's#^/##; s#/#_#g')" dst="$1"; [[ -f "$src" ]] || return 0; install -d "$(dirname "$dst")"; cp -a "$src" "$dst"; chmod 600 "$dst" 2>/dev/null || true; log "Восстановлена конфигурация: $dst"; }
-
-# Preserve secrets before any git reset.
 preserve_file /etc/xfi-guard/bot.env
 preserve_file /var/lib/xfi-guard/ai.json
 preserve_file "$INSTALL_DIR/.env"
 preserve_file "$INSTALL_DIR/.env.local"
-
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   git -C "$INSTALL_DIR" fetch --all --prune
   git -C "$INSTALL_DIR" reset --hard origin/main
@@ -43,10 +39,8 @@ restore_file /etc/xfi-guard/bot.env
 restore_file /var/lib/xfi-guard/ai.json
 restore_file "$INSTALL_DIR/.env"
 restore_file "$INSTALL_DIR/.env.local"
-
 log "Запуск pytest"
 "$INSTALL_DIR/.venv/bin/python" -m pytest -q || die "pytest завершился с ошибкой; сервисы не будут включены"
-
 install -d -m 0755 /etc/fail2ban/filter.d /etc/fail2ban/jail.d
 install -m 0644 config/fail2ban/filter.d/xfi-guard.conf /etc/fail2ban/filter.d/xfi-guard.conf
 install -m 0644 config/fail2ban/jail.d/xfi-guard.conf /etc/fail2ban/jail.d/xfi-guard.conf
@@ -55,9 +49,7 @@ chmod 0640 /var/log/xfi-guard/fail2ban-sync.log
 systemctl enable --now fail2ban
 fail2ban-client reload || systemctl restart fail2ban
 fail2ban-client status xfi-guard >/dev/null || die "Fail2Ban jail xfi-guard не запустился"
-
 install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
-
 printf '\n========================================\n XFI Guard — первоначальная настройка\n========================================\n\n'
 BOT_TOKEN=""
 ADMIN_IDS=""
@@ -97,7 +89,7 @@ EOF
       if [[ ! -f "/etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem" ]]; then certbot certonly --webroot -w /var/www/html -d "$WEBHOOK_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email || die "Не удалось получить SSL для $WEBHOOK_DOMAIN."; fi
       cat >/etc/nginx/sites-available/xfi-guard-webhook.conf <<EOF
 server { listen 80; listen [::]:80; server_name $WEBHOOK_DOMAIN; location /.well-known/acme-challenge/ { root /var/www/html; } location / { return 301 https://\$host\$request_uri; } }
-server { listen 443 ssl http2; listen [::]:443 ssl http2; server_name $WEBHOOK_DOMAIN; ssl_certificate /etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem; ssl_certificate_key /etc/letsencrypt/live/$WEB_DOMAIN/privkey.pem; location = /xfi-guard/webhook { proxy_pass http://127.0.0.1:8080; proxy_http_version 1.1; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto https; } location / { return 404; } }
+server { listen 443 ssl http2; listen [::]:443 ssl http2; server_name $WEBHOOK_DOMAIN; ssl_certificate /etc/letsencrypt/live/$WEBHOOK_DOMAIN/fullchain.pem; ssl_certificate_key /etc/letsencrypt/live/$WEBHOOK_DOMAIN/privkey.pem; location = /xfi-guard/webhook { proxy_pass http://127.0.0.1:8080; proxy_http_version 1.1; proxy_set_header Host \$host; proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto https; } location / { return 404; } }
 EOF
       nginx -t && systemctl reload nginx
     else
@@ -112,21 +104,16 @@ EOF
     log "Telegram Bot пропущен; его можно настроить позже."
   fi
 fi
-
 # Single-VPS mode: no cluster/multi-VPS services, node enrollment or remote SSH management.
-rm -f /etc/systemd/system/xfi-guard-multi-vps-master.service \
-      /etc/systemd/system/xfi-guard-cluster-node.service \
-      /etc/systemd/system/xfi-guard-multi-vps.service
+rm -f /etc/systemd/system/xfi-guard-multi-vps-master.service /etc/systemd/system/xfi-guard-cluster-node.service /etc/systemd/system/xfi-guard-multi-vps.service
 systemctl daemon-reload || true
 systemctl disable --now xfi-guard-multi-vps-master.service 2>/dev/null || true
 systemctl disable --now xfi-guard-cluster-node.service 2>/dev/null || true
-
 if [[ -f systemd/xfi-guard-bot.service ]]; then
   install -m 0644 systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
   sed -i "s#^ExecStart=.*#ExecStart=$INSTALL_DIR/.venv/bin/python -m xfi_guard.bot#" /etc/systemd/system/xfi-guard-bot.service
   systemctl daemon-reload
 fi
-
 if [[ ! -f /var/lib/xfi-guard/ai.json ]]; then
   cat >/var/lib/xfi-guard/ai.json <<'EOF'
 {"provider":"gemini","gemini_model":"gemini-2.5-pro","groq_model":"llama-3.3-70b-versatile","gemini_key":"","groq_key":""}
@@ -134,7 +121,6 @@ EOF
   chmod 600 /var/lib/xfi-guard/ai.json
 fi
 log "AI по умолчанию: Gemini"
-
 systemctl daemon-reload
 systemctl enable --now xfi-guard
 sleep 2
