@@ -12,7 +12,6 @@ from .ai_center import install_ai_center_handlers, ai_center_menu
 from .ai_model_manager import install_ai_model_manager
 from .ai_keys_ui import install_ai_key_handlers
 from .openrouter_ui import install_openrouter_handlers
-from .xui_ui import install_xui_handlers
 from .alert_callbacks import register_alert_callbacks
 from .checks import collect_basic_checks
 from .defense_ui import install_defense_handlers
@@ -25,7 +24,7 @@ from .subnet_ui import install_subnet_handlers
 
 def admin(message): return authorized(message)
 def kb(rows): return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=x) for x in row] for row in rows],resize_keyboard=True,is_persistent=True)
-def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS"],["🚫 Блокировки","📋 События","⚙️ 3X-UI"],["🔄 Проверка","🔄 Обновить бота","❓ Помощь"]])
+def main_kb(): return kb([["📊 Статус","🛡 Защита","🌐 VPN/Xray"],["🤖 AI","🖥 VPS"],["🚫 Блокировки","📋 События"],["🔄 Проверка","🔄 Обновить бота","❓ Помощь"]])
 def results(items): return "\n".join(f"{getattr(x,'status','unknown').upper()}: {getattr(x,'name','check')} — {getattr(x,'message','')}" for x in items)[:3800] or "Нет данных."
 def blocked_view():
     try:
@@ -34,12 +33,11 @@ def blocked_view():
         if not ips: lines.append("• нет активных публичных IP-блокировок")
         return "\n".join(lines)[:3900]
     except Exception: return "❌ Не удалось получить список блокировок. Подробности записаны в журнал."
-
 def build_dispatcher():
     dp=Dispatcher(storage=MemoryStorage()); rl=RateLimitMiddleware(rate=2,period=1.0); dp.message.middleware(rl); dp.callback_query.middleware(rl)
     register_alert_callbacks(dp)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
-    install_xui_handlers(dp); install_defense_handlers(dp); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
+    install_defense_handlers(dp); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
     @dp.callback_query(F.data=="xfi_apply_update")
     async def apply_update_callback(callback):
         if not authorized(callback): return await callback.answer("Нет доступа",show_alert=True)
@@ -58,7 +56,9 @@ def build_dispatcher():
         if admin(message): await message.answer(blocked_view(),reply_markup=main_kb())
     @dp.message(Command("vps"))
     async def vps_command(message):
-        if admin(message): await message.answer("🖥 VPS\n\nЦентр диагностики и управления текущим VPS.",reply_markup=__import__('xfi_guard.vps_ui',fromlist=['vps_menu']).vps_menu())
+        if admin(message):
+            from .vps_ui import vps_menu
+            await message.answer("🖥 VPS\n\nЦентр диагностики текущего VPS.",reply_markup=vps_menu())
     @dp.message(F.text=="📊 Статус")
     async def status_button(message): await status_command(message)
     @dp.message(F.text=="🛡 Защита")
@@ -81,6 +81,9 @@ def build_dispatcher():
     @dp.message(F.text=="🤖 AI")
     async def ai_button(message):
         if admin(message): await message.answer("🤖 AI ЦЕНТР\n\nЕдиный консилиум Gemini + Groq + OpenRouter + RouterAI.",reply_markup=ai_center_menu())
+    @dp.message(F.text=="⬅️ AI")
+    async def ai_back(message,state:FSMContext):
+        if admin(message): await state.clear(); await message.answer("🤖 AI ЦЕНТР",reply_markup=ai_center_menu())
     @dp.message(F.text=="🔄 Проверка")
     async def check_button(message): await status_command(message)
     @dp.message(F.text=="🔄 Обновить бота")
@@ -90,15 +93,14 @@ def build_dispatcher():
             subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     @dp.message(F.text=="❓ Помощь")
     async def help_button(message):
-        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — управление текущим VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты\n\nРежим: только установленный VPS. Подключение других VPS отключено.",reply_markup=main_kb())
+        if admin(message): await message.answer("❓ XFI Guard\n\n/start — главное меню\n/status — полный статус\n/blocked — активные блокировки IP\n/vps — диагностика текущего VPS\n/force_update — принудительное обновление\n/threats — рейтинг угроз\n/defense_history — история защиты\n\nРежим: только установленный VPS. Подключение других VPS и мониторинг 3X-UI отключены.",reply_markup=main_kb())
     @dp.message(F.text=="⬅️ Главное меню")
-    async def back_main(message,state:FSMContext):
+    async def back_main(message,state):
         if admin(message): await state.clear(); await message.answer("🏠 Главное меню",reply_markup=main_kb())
     @dp.message()
     async def unknown_message(message):
         if admin(message): await message.answer("Команда не распознана. Нажмите /start.",reply_markup=main_kb())
     return dp
-
 async def main():
     token=os.getenv("XFI_GUARD_BOT_TOKEN","").strip()
     if not token: raise RuntimeError("XFI_GUARD_BOT_TOKEN не задан")
