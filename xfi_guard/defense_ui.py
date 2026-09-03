@@ -35,11 +35,6 @@ def _defense_text():
  if critical: lines.append("🚨 Критические угрозы:");lines.extend(f"• {x.get('ip')} — {str(x.get('risk','critical')).upper()} {int(x.get('risk_score',0) or 0)}/100" for x in critical[:15])
  else:lines.append("✅ Критических угроз для блокировки нет.")
  return "\n".join(lines)[:3900]
-def _defense_inline():
- critical=_critical_candidates();rows=[]
- if critical:
-  rows.append([InlineKeyboardButton(text=f"🚨 Заблокировать все критические ({len(critical)})",callback_data="manual:block_all_critical")]);rows += [[InlineKeyboardButton(text=f"🚫 {x.get('ip')} — {int(x.get('risk_score',0) or 0)}/100",callback_data=f"manual:block:{x.get('ip')}")] for x in critical[:8]]
- rows.append([InlineKeyboardButton(text="🔄 Обновить",callback_data="manual:refresh_menu")]);return InlineKeyboardMarkup(inline_keyboard=rows)
 def _ranking_text(items): return "\n".join(f"{i+1}. {x.get('ip')} — {str(x.get('risk','unknown')).upper()} {int(x.get('risk_score',0) or 0)}/100 | {x.get('events',0)} событий" for i,x in enumerate(items[:20])) or "Активных угроз не обнаружено."
 def _ranking_inline(items):
  rows=[]
@@ -47,7 +42,7 @@ def _ranking_inline(items):
   rows.append([InlineKeyboardButton(text=f"🚨 Заблокировать ВСЕ угрозы ({len(items)})",callback_data="manual:block_all_threats")]);critical=[x for x in items if str(x.get('risk','')).lower()=='critical' or int(x.get('risk_score',0) or 0)>=80]
   if critical:rows.append([InlineKeyboardButton(text=f"🚨 Только критические ({len(critical)})",callback_data="manual:block_all_critical")])
   rows += [[InlineKeyboardButton(text=f"🚫 Заблокировать {x.get('ip')} ({int(x.get('risk_score',0) or 0)}/100)",callback_data=f"manual:block:{x.get('ip')}")] for x in items[:20]]
- rows += [[InlineKeyboardButton(text="🔄 Обновить угрозы",callback_data="manual:refresh_threats")],[InlineKeyboardButton(text="⬅️ Защита",callback_data="manual:refresh_menu")]];return InlineKeyboardMarkup(inline_keyboard=rows)
+ rows += [[InlineKeyboardButton(text="🔄 Обновить угрозы",callback_data="manual:refresh_threats")],[InlineKeyboardButton(text="⬅️ Защита",callback_data="manual:back_defense")]];return InlineKeyboardMarkup(inline_keyboard=rows)
 def install_defense_handlers(dp:Dispatcher)->None:
  if getattr(dp,'_xfi_defense_ui_installed',False):return
  dp._xfi_defense_ui_installed=True
@@ -96,8 +91,17 @@ def install_defense_handlers(dp:Dispatcher)->None:
   if not authorized(callback):await callback.answer('Нет доступа',show_alert=True);return
   parts=(callback.data or '').split(':',2)
   if len(parts)<2:await callback.answer('Некорректное действие',show_alert=True);return
-  if parts[1]=='cancel':await callback.answer('Отменено');return
-  if parts[1] in {'refresh_menu','refresh_threats'}:
+  if parts[1]=='cancel':
+   await callback.answer('Отменено');
+   try: await callback.message.edit_text(_defense_text(),reply_markup=_ranking_inline(_threat_candidates()))
+   except Exception: pass
+   return
+  if parts[1]=='back_defense':
+   await callback.answer();
+   try: await callback.message.edit_text(_defense_text(),reply_markup=_ranking_inline(_threat_candidates()))
+   except Exception: pass
+   return
+  if parts[1]=='refresh_threats':
    items=_threat_candidates();await callback.answer('Обновлено')
    try:await callback.message.edit_text('🧮 Рейтинг угроз\n\n'+_ranking_text(items),reply_markup=_ranking_inline(items))
    except Exception:pass
