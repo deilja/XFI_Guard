@@ -40,6 +40,12 @@ def build_dispatcher():
     register_alert_callbacks(dp)
     install_ai_handlers(dp); install_ai_key_handlers(dp); install_ai_model_manager(dp); install_ai_center_handlers(dp); install_openrouter_handlers(dp)
     install_xui_handlers(dp); install_defense_handlers(dp); install_vps_handlers(dp, main_kb); install_subnet_handlers(dp, main_kb)
+    @dp.callback_query(F.data=="xfi_apply_update")
+    async def apply_update_callback(callback):
+        if not authorized(callback): return await callback.answer("Нет доступа",show_alert=True)
+        await callback.answer("Запускаю обновление")
+        await callback.message.edit_text("⏳ Безопасное обновление XFI Guard запущено.\n\nGit → проверка → установка → health-check → автоматический откат при ошибке.")
+        subprocess.Popen(["systemctl","start","xfi-guard-update.service"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     @dp.message(Command("start"))
     async def start(message,state:FSMContext):
         await state.clear()
