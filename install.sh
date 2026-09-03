@@ -21,13 +21,7 @@ preserve_file /etc/xfi-guard/bot.env
 preserve_file /var/lib/xfi-guard/ai.json
 preserve_file "$INSTALL_DIR/.env"
 preserve_file "$INSTALL_DIR/.env.local"
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  git -C "$INSTALL_DIR" fetch --all --prune
-  git -C "$INSTALL_DIR" reset --hard origin/main
-else
-  rm -rf "$INSTALL_DIR"
-  git clone --depth 1 "$REPO" "$INSTALL_DIR"
-fi
+if [[ -d "$INSTALL_DIR/.git" ]]; then git -C "$INSTALL_DIR" fetch --all --prune; git -C "$INSTALL_DIR" reset --hard origin/main; else rm -rf "$INSTALL_DIR"; git clone --depth 1 "$REPO" "$INSTALL_DIR"; fi
 cd "$INSTALL_DIR"
 "$PYTHON_BIN" -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/python" -m pip install --upgrade pip
@@ -50,11 +44,12 @@ systemctl enable --now fail2ban
 fail2ban-client reload || systemctl restart fail2ban
 fail2ban-client status xfi-guard >/dev/null || die "Fail2Ban jail xfi-guard не запустился"
 install -m 0644 systemd/xfi-guard.service /etc/systemd/system/xfi-guard.service
+# Install updater/checker units from GitHub so the bot can update itself safely.
+for unit in xfi-guard-update.service xfi-guard-update-check.service xfi-guard-update-check.timer; do
+  [[ -f "systemd/$unit" ]] && install -m 0644 "systemd/$unit" "/etc/systemd/system/$unit"
+done
 printf '\n========================================\n XFI Guard — первоначальная настройка\n========================================\n\n'
-BOT_TOKEN=""
-ADMIN_IDS=""
-WEBHOOK_DOMAIN=""
-EXISTING_CONFIG=0
+BOT_TOKEN=""; ADMIN_IDS=""; WEBHOOK_DOMAIN=""; EXISTING_CONFIG=0
 [[ -f /etc/xfi-guard/bot.env ]] && EXISTING_CONFIG=1
 if [[ "$EXISTING_CONFIG" -eq 1 ]]; then
   log "Найдена существующая конфигурация. Секреты будут сохранены; повторный ввод не требуется."
@@ -109,6 +104,9 @@ rm -f /etc/systemd/system/xfi-guard-multi-vps-master.service /etc/systemd/system
 systemctl daemon-reload || true
 systemctl disable --now xfi-guard-multi-vps-master.service 2>/dev/null || true
 systemctl disable --now xfi-guard-cluster-node.service 2>/dev/null || true
+# Remove legacy cluster configuration and state left by older releases.
+rm -f /etc/xfi-guard/cluster.env /etc/xfi-guard/cluster-node.env
+rm -f /var/lib/xfi-guard/cluster-state.json
 if [[ -f systemd/xfi-guard-bot.service ]]; then
   install -m 0644 systemd/xfi-guard-bot.service /etc/systemd/system/xfi-guard-bot.service
   sed -i "s#^ExecStart=.*#ExecStart=$INSTALL_DIR/.venv/bin/python -m xfi_guard.bot#" /etc/systemd/system/xfi-guard-bot.service
@@ -129,7 +127,8 @@ if [[ -n "$BOT_TOKEN" ]]; then
   systemctl enable --now xfi-guard-bot
   sleep 2
   systemctl is-active --quiet xfi-guard-bot || { journalctl -u xfi-guard-bot -n 80 --no-pager || true; die "Telegram bot не запустился"; }
+  systemctl enable --now xfi-guard-update-check.timer 2>/dev/null || true
 fi
 log "Установка/обновление завершено; Fail2Ban xfi-guard активен, bantime=7d; режим: один VPS."
 printf '\nMonitor: systemctl status xfi-guard --no-pager\nLogs:    journalctl -u xfi-guard -f\nJSONL:   /var/log/xfi-guard/monitor.jsonl\nFail2Ban: fail2ban-client status xfi-guard\n'
-[[ -z "$BOT_TOKEN" ]] || printf 'Bot:     systemctl status xfi-guard-bot --no-pager\nAI:      настройка Gemini ↔ Groq через Telegram → 🤖 AI\n'
+[[ -z "$BOT_TOKEN" ]] || printf 'Bot:     systemctl status xfi-guard-bot --no-pager\nUpdater: systemctl status xfi-guard-update-check.timer --no-pager\nAI:      настройка Gemini ↔ Groq через Telegram → 🤖 AI\n'
